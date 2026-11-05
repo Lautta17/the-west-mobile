@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.4
-// @description  TEST v2 alpha.4: exportar vinculaciones CSS para preparar instalacion con botones preconfigurados.
+// @version      2.0.0-alpha.5
+// @description  TEST v2 alpha.5: accesos predeterminados con prioridad de vinculos manuales y respaldo seguro.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -31,6 +31,17 @@
     { key: 'personaje', label: 'Personaje', icon: '🤠' },
     { key: 'ciudad', label: 'Ciudad', icon: '🏘️' },
   ];
+  // Selectores verificados en una partida real (alpha.4).
+  // No suponemos que todas las versiones/idiomas del juego mantengan el mismo DOM:
+  // si alguno deja de encontrarse, se ofrece la vinculación manual de siempre.
+  // No se persisten como ajustes del jugador; config.shortcuts conserva sus overrides.
+  const AUTO_SHORTCUTS = Object.freeze({
+    mapa: '#ui_minimap',
+    misiones: '#ui_menubar > div:nth-of-type(1) > div:nth-of-type(1)',
+    mochila: '#ui_bottombar > div > div:nth-of-type(1) > div:nth-of-type(2)',
+    personaje: '#ui_character_container > div:nth-of-type(8)',
+    ciudad: '#ui_bottombar > div > div:nth-of-type(2) > div:nth-of-type(2)',
+  });
   const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
@@ -90,6 +101,27 @@
   }
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(config)); } catch (_) { /* modo privado */ }
+  }
+  // Se intenta primero la selección manual. Si dejó de existir, se busca
+  // el selector verificado por defecto. Sólo se acepta una coincidencia real.
+  // No se disparan eventos en esta función; únicamente resuelve un elemento.
+  function resolveShortcut(key) {
+    const manual = config.shortcuts[key];
+    const automatic = AUTO_SHORTCUTS[key];
+    const options = [
+      ...(typeof manual === 'string' && manual ? [{ selector: manual, mode: 'manual' }] : []),
+      ...(automatic && automatic !== manual ? [{ selector: automatic, mode: 'auto' }] : []),
+    ];
+    for (const option of options) {
+      try {
+        const matched = document.querySelectorAll(option.selector);
+        if (matched.length !== 1) continue;
+        const element = matched[0];
+        if (!element?.isConnected || host.contains(element)) continue;
+        return { element, selector: option.selector, mode: option.mode };
+      } catch (_) { /* Selector viejo o DOM cambiado */ }
+    }
+    return null;
   }
   function escapeCss(text) {
     return window.CSS && typeof CSS.escape === 'function'
@@ -329,8 +361,9 @@
 
     $('[data-action="blockfocus"]').textContent = config.blockMapAutoFocus ? 'Activado' : 'Desactivado';
     linksEl.innerHTML = ITEMS.map(i => {
-      const isLinked = !!config.shortcuts[i.key];
-      return `<div class="line"><span>${i.icon} ${i.label} <small class="muted">(${isLinked ? 'vinculado' : 'sin vincular'})</small></span>
+      const selected = resolveShortcut(i.key);
+      const status = selected ? (selected.mode === 'manual' ? 'manual ✓' : 'automático ✓') : 'sin detectar';
+      return `<div class="line"><span>${i.icon} ${i.label} <small class="muted">(${status})</small></span>
         <button type="button" data-action="bind" data-key="${i.key}" class="${binding === i.key ? 'linking' : ''}">${binding === i.key ? 'Esperando…' : 'Vincular'}</button></div>`;
     }).join('');
     if (config.enabled && (config.compact || config.largePanels)) scheduleCompact();
@@ -534,21 +567,14 @@
   }
   function openShortcut(key) {
     const item = ITEMS.find(i => i.key === key);
-    const selector = config.shortcuts[key];
-    if (!selector) {
+    const resolved = resolveShortcut(key);
+    if (!resolved) {
       settingsOpen = true;
       apply();
-      toast(`Primero vinculá «${item.label}» con su botón original.`);
+      toast(`No encontré el botón original de «${item.label}». Vinculalo desde ⚙️.`);
       return;
     }
-    let source;
-    try { source = document.querySelector(selector); } catch (_) { /* selector obsoleto */ }
-    if (!source || host.contains(source)) {
-      settingsOpen = true;
-      apply();
-      toast(`El acceso «${item.label}» cambió. Volvé a vincularlo.`);
-      return;
-    }
+    const source = resolved.element;
     // Si la ventana sigue abierta, cerrar mediante su X original. No tocamos
     // la opción original de abrir ni otros diálogos que puedan estar activos.
     if (TOGGLE_SHORTCUTS.has(key)) {
@@ -651,7 +677,7 @@
       'Ventanas con X grande: ' + document.querySelectorAll('.twmm-native-close').length,
       'Primer ventana (px): ' + (bounds ? `${Math.round(bounds.width)}x${Math.round(bounds.height)}` : 'ninguna'),
       'Alternancia Mapa/Personaje: ' + [...TOGGLE_SHORTCUTS].map(key => `${key}=${trackedShortcutDialog(key) ? 'abierta' : 'no detectada'}`).join(', '),
-      'Atajos: ' + ITEMS.map(i => `${i.key}=${config.shortcuts[i.key] ? 'sí' : 'no'}`).join(', '),
+      'Atajos: ' + ITEMS.map(i => `${i.key}=${resolveShortcut(i.key)?.mode || 'sin detectar'}`).join(', '),
     ].join('\n');
     $('.diagnostic').textContent = text;
     $('.diagnostic').classList.remove('hidden');
@@ -1232,17 +1258,17 @@
     if (action === 'export-shortcuts') {
       // Solo exportamos selectores CSS, sin HTML ni datos de sesión.
       const entries = Object.fromEntries(ITEMS.map(item => {
-        const selector = config.shortcuts[item.key] || null;
-        let resolves = false;
-        if (selector) {
-          try { resolves = !!document.querySelector(selector); } catch (_) { /* selector desactualizado */ }
-        }
-        return [item.key, { selector, found: resolves }];
+        const current = resolveShortcut(item.key);
+        return [item.key, {
+          selector: current?.selector || config.shortcuts[item.key] || AUTO_SHORTCUTS[item.key] || null,
+          found: !!current,
+          source: current?.mode || 'sin detectar'
+        }];
       }));
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.4',
+        version: '2.0.0-alpha.5',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1323,5 +1349,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.4: ya podés exportar tus vínculos desde ⚙️.', 3400);
+  toast('The West Mobile TEST v2 alpha.5: accesos automáticos listos; vinculaciones manuales conservadas.', 3400);
 })();
