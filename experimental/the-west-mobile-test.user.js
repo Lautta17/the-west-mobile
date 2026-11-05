@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.8
-// @description  TEST v2 alpha.8: separacion radial, HUD del personaje y botones de trabajos tactiles (experimentales).
+// @version      2.0.0-alpha.9
+// @description  TEST v2 alpha.9: correccion del espaciado circular e inspector de HUD y eventos.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -46,6 +46,7 @@
   let config = readSettings();
   let binding = null;
   let circleInspectionStep = 0;
+  let hudCaptureMode = null;
   let inspectedPointer = null;
   let settingsOpen = false;
   let noticeTimer;
@@ -62,7 +63,11 @@
   let nativeLayoutSuspendUntil = 0;
   let nativeDragState = null;
   const spacedMapJobs = new Set();
+  const radialDirections = new Map();
   let radialGeneration = 0;
+  let radialLayoutStatus = 'sin evaluar';
+  let lastMapTouch = null;
+  let mapPointerStart = null;
   let workTouchQueued = false;
   let workStepCount = 0;
   const nativeWindowState = new Map();
@@ -355,7 +360,11 @@
       <div class="line"><span>Evitar teclado automático del minimapa</span><button type="button" data-action="blockfocus"></button></div>
       <div class="line"><span>🧪 Tamaño de iconos de trabajos (TEST)<small class="muted">Agranda las imágenes del círculo sin cambiar su posición original.</small></span><button type="button" data-action="map-job-size"></button></div>
       <div class="line"><span>🧪 Separación del círculo (TEST)<small class="muted">Separa 3 a 6 iconos alrededor del punto seleccionado, solo cuando identifica un grupo circular.</small></span><button type="button" data-action="map-job-spacing"></button></div>
-      <div class="line"><span>🧪 Vida y energía: tamaño del HUD (TEST)<small class="muted">Amplía el bloque del personaje. La reubicación de bonos queda pendiente de identificar sus elementos.</small></span><button type="button" data-action="hud-scale"></button></div>
+      <div class="line"><span>🧪 Vida y energía: tamaño del HUD (TEST)<small class="muted">Agrandamos el perfil; para mover recursos y eventos sin romper el HUD primero necesitamos identificar sus elementos.</small></span><button type="button" data-action="hud-scale"></button></div>
+      <div class="actions">
+        <button type="button" data-action="hud-capture-top">Identificar barra superior</button>
+        <button type="button" data-action="hud-capture-event">Identificar icono de evento</button>
+      </div>
       <div class="line"><span>🧪 +/- e Iniciar trabajo (TEST)<small class="muted">Amplía el botón Iniciar y los controles +/- que puedan reconocerse por su texto, etiqueta o clase.</small></span><button type="button" data-action="job-touch"></button></div>
       <div class="line"><span><b>🧪 v2.0 — Inspección de trabajos y mapa</b><small class="muted"> Abrí una ventana de trabajo y analizala, o activá la captura de dos toques para identificar el circulito que aparece al seleccionar un lugar.</small></span></div>
       <div class="actions">
@@ -409,11 +418,15 @@
       String(1 + (config.jobTouchSize - 100) * 0.004));
     if (!config.enabled || config.mapJobSpacing === 0) clearRadialSpacing();
     const railOpen = railManualOverride === null ? config.railExpanded : railManualOverride;
-    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || (!railOpen && !settingsOpen));
-    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || settingsOpen || railOpen);
+    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!hudCaptureMode || (!railOpen && !settingsOpen));
+    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!hudCaptureMode || settingsOpen || railOpen);
     $('.bubble').classList.toggle('hidden', config.enabled);
-    bindHintEl.classList.toggle('hidden', !config.enabled || (!binding && !circleInspectionStep));
-    if (circleInspectionStep) {
+    bindHintEl.classList.toggle('hidden', !config.enabled || (!binding && !circleInspectionStep && !hudCaptureMode));
+    if (hudCaptureMode) {
+      $('.bind-label').textContent = hudCaptureMode === 'resources'
+        ? 'Inspector: tocá la barra de recursos de arriba'
+        : 'Inspector: tocá un botón de evento';
+    } else if (circleInspectionStep) {
       $('.bind-label').textContent = circleInspectionStep === 1
         ? 'Inspector 1/2: tocá un lugar en el mapa'
         : 'Inspector 2/2: tocá el circulito que apareció';
@@ -766,7 +779,7 @@
       .slice(0, 10);
     return JSON.stringify({
       kind: 'the-west-mobile-test-job-layout',
-      version: '2.0.0-alpha.8',
+      version: '2.0.0-alpha.9',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       windows: windows.map((win, index) => {
         const matches = [...win.querySelectorAll('*')]
@@ -802,6 +815,38 @@
       note: 'Solo clases genericas, tamanos y estructura; sin textos ni contenido personal.'
     }, null, 2);
   }
+  // Un toque capturado identifica el DOM del HUD sin disparar la acción.
+  // Guardamos solo geometría, clases genéricas e IDs estáticos de interfaz.
+  // No exportamos textos, imágenes, cantidades, HTML, URLs ni coordenadas del mapa.
+  function inspectHUDPart(target, kind) {
+    const chain=[];
+    const summarize = (node, level) => {
+      const r=node.getBoundingClientRect();
+      const id = typeof node.id === 'string' &&
+        /^(?:ui_|tw2gui_|event_|hud_|top_|left_|right_)[a-z0-9_-]{0,55}$/i.test(node.id) &&
+        !/[0-9]{3}/.test(node.id) ? node.id : null;
+      return {
+        level, tag:node.tagName.toLowerCase(), id,
+        classes:[...node.classList].filter(name =>
+          /^[a-z][a-z0-9_-]{0,55}$/i.test(name) && !/[0-9]{3}/.test(name)).slice(0,12),
+        viewportRect:[Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height)],
+        children:node.children.length,
+        position:getComputedStyle(node).position,
+      };
+    };
+    for(let el=target,level=0;el instanceof Element&&el!==document.body&&level<11;el=el.parentElement,level++)
+      chain.push(summarize(el,level));
+    const parent=target.parentElement;
+    return JSON.stringify({
+      kind:'the-west-mobile-test-hud-'+kind,
+      version:'2.0.0-alpha.9',
+      target:chain[0]||null, ancestorChain:chain,
+      siblings:parent?[...parent.children].filter(el=>el!==target).slice(0,7)
+        .map(el=>summarize(el,0)):[],
+      note:'Sin textos, nombres, cantidades, HTML, imagenes ni URLs. Coordenadas relativas al viewport.'
+    },null,2);
+  }
+
   function inspectMapCircleElement(target) {
     const chain = [];
     for (let node = target, level = 0; node instanceof Element &&
@@ -810,7 +855,7 @@
     }
     return JSON.stringify({
       kind: 'the-west-mobile-test-map-circle',
-      version: '2.0.0-alpha.8',
+      version: '2.0.0-alpha.9',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       element: chain[0] || null,
       ancestorChain: chain,
@@ -853,61 +898,90 @@
       updateWorkTouchTargets();
     });
   }
+
   function clearRadialSpacing() {
-    for (const el of spacedMapJobs) {
-      if (!el.isConnected) continue;
+    for(const el of spacedMapJobs){
+      if(!el.isConnected)continue;
       el.classList.remove('twmm-radial-spread');
       el.style.removeProperty('--twmm-ring-x');
       el.style.removeProperty('--twmm-ring-y');
     }
     spacedMapJobs.clear();
+    radialDirections.clear();
   }
-  // Detectamos solamente un anillo de 3-6 marcadores próximo al punto tocado.
-  // El juego conserva sus nodos y left/top; desplazamos su dibujo/hitbox local.
-  function spreadRadialNear(x, y, generation) {
-    if (generation !== radialGeneration || !config.enabled || config.mapJobSpacing <= 0) return;
-    const viewport = window.visualViewport;
-    const minX = viewport?.offsetLeft || 0, minY = viewport?.offsetTop || 0;
-    const maxX = minX + (viewport?.width || innerWidth);
-    const maxY = minY + (viewport?.height || innerHeight);
-    const nearby = [];
-    for (const img of document.querySelectorAll('.job > img.jobimg')) {
-      const node = img.parentElement;
-      if (!node || !node.isConnected || node.closest('.jobwindow') || node.closest('#ui_workcontainer')) continue;
-      const style = getComputedStyle(node);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
-      const r = node.getBoundingClientRect();
-      if (r.width < 24 || r.width > 90 || r.height < 24 || r.height > 90) continue;
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      if (cx < minX - 20 || cx > maxX + 20 || cy < minY - 20 || cy > maxY + 20) continue;
-      if (Math.hypot(cx - x, cy - y) <= 160) nearby.push({node, cx, cy});
-      if (nearby.length > 6) return; // Si hay demasiados, no movemos nada.
-    }
-    if (nearby.length < 3 || nearby.length > 6) return;
-    const centerX = nearby.reduce((n,p)=>n+p.cx,0)/nearby.length;
-    const centerY = nearby.reduce((n,p)=>n+p.cy,0)/nearby.length;
-    const radii = nearby.map(p=>Math.hypot(p.cx-centerX, p.cy-centerY));
-    const minR = Math.min(...radii), maxR = Math.max(...radii);
-    if (minR < 18 || maxR > 135 || maxR - minR > 95) return;
-    // Exigir que el toque haya sido aproximadamente el centro del grupo.
-    if (Math.hypot(x - centerX,y - centerY) > 90) return;
-    clearRadialSpacing();
-    for (let i=0; i<nearby.length; i++) {
-      const p=nearby[i], d=radii[i];
-      const deltaX=(p.cx-centerX)/d*config.mapJobSpacing;
-      const deltaY=(p.cy-centerY)/d*config.mapJobSpacing;
-      p.node.style.setProperty('--twmm-ring-x',deltaX.toFixed(1)+'px');
-      p.node.style.setProperty('--twmm-ring-y',deltaY.toFixed(1)+'px');
-      p.node.classList.add('twmm-radial-spread');
-      spacedMapJobs.add(p.node);
+  function applyRadialDistance() {
+    if(!config.enabled||config.mapJobSpacing<=0){clearRadialSpacing();return;}
+    for(const [el,vec] of [...radialDirections]){
+      if(!el.isConnected){radialDirections.delete(el);spacedMapJobs.delete(el);continue;}
+      el.style.setProperty('--twmm-ring-x',(vec[0]*config.mapJobSpacing).toFixed(1)+'px');
+      el.style.setProperty('--twmm-ring-y',(vec[1]*config.mapJobSpacing).toFixed(1)+'px');
+      el.classList.add('twmm-radial-spread');
+      spacedMapJobs.add(el);
     }
   }
-  function scheduleRadialSpread(x, y) {
+  // Se activa mediante pointerup capturado; el mapa real puede no llamarse #map.
+  // Si hay más de seis elementos cerca, solo probamos los seis más próximos;
+  // no tocamos absolutamente nada si el grupo no es circular.
+  function spreadRadialNear(x,y,generation) {
+    if(generation!==radialGeneration||!config.enabled||config.mapJobSpacing<=0||spacedMapJobs.size)return;
+    const candidates=[];
+    for(const img of document.querySelectorAll('.job > img.jobimg')){
+      const node=img.parentElement;
+      if(!node||!node.isConnected||node.closest('.jobwindow, #ui_workcontainer'))continue;
+      const style=getComputedStyle(node);
+      if(style.display==='none'||style.visibility==='hidden')continue;
+      const r=node.getBoundingClientRect();
+      if(r.width<24||r.width>95||r.height<24||r.height>95)continue;
+      const cx=r.left+r.width/2,cy=r.top+r.height/2;
+      const dist=Math.hypot(cx-x,cy-y);
+      if(dist<190)candidates.push({node,cx,cy,dist});
+    }
+    candidates.sort((a,b)=>a.dist-b.dist);
+    if(candidates.length<5){radialLayoutStatus='solo '+candidates.length+' iconos cerca';return;}
+    const group=candidates.slice(0,6);
+    const centerX=group.reduce((n,p)=>n+p.cx,0)/group.length;
+    const centerY=group.reduce((n,p)=>n+p.cy,0)/group.length;
+    const radii=group.map(p=>Math.hypot(p.cx-centerX,p.cy-centerY));
+    const avg=radii.reduce((n,r)=>n+r,0)/group.length;
+    const minR=Math.min(...radii),maxR=Math.max(...radii);
+    if(minR<19||maxR>155||maxR-minR>Math.max(33,avg*0.5)||
+       Math.hypot(x-centerX,y-centerY)>115){
+      radialLayoutStatus='grupo cercano, pero no circular ('+candidates.length+' candidatos)';
+      return;
+    }
+    const angles=group.map(p=>Math.atan2(p.cy-centerY,p.cx-centerX)).sort((a,b)=>a-b);
+    let maxGap=0;
+    for(let i=0;i<angles.length;i++){
+      const gap=(i===angles.length-1?angles[0]+2*Math.PI:angles[i+1])-angles[i];
+      maxGap=Math.max(maxGap,gap);
+    }
+    if(maxGap>2.75){radialLayoutStatus='marcadores demasiado agrupados';return;}
+    for(let i=0;i<group.length;i++){
+      const p=group[i];
+      radialDirections.set(p.node,[(p.cx-centerX)/radii[i],(p.cy-centerY)/radii[i]]);
+    }
+    applyRadialDistance();
+    radialLayoutStatus='separados '+spacedMapJobs.size+' iconos (+'+config.mapJobSpacing+' px)';
+  }
+  function scheduleRadialSpread(x,y) {
+    ++radialGeneration;
     clearRadialSpacing();
-    if (!config.enabled || config.mapJobSpacing <= 0) return;
-    const generation=++radialGeneration;
-    setTimeout(()=>spreadRadialNear(x,y,generation),140);
-    setTimeout(()=>spreadRadialNear(x,y,generation),380);
+    lastMapTouch={x,y};
+    if(!config.enabled||config.mapJobSpacing<=0)return;
+    radialLayoutStatus='buscando círculo';
+    const generation=radialGeneration;
+    for(const delay of [100,260,510,850])setTimeout(()=>spreadRadialNear(x,y,generation),delay);
+  }
+  function isWorldMapTouch(target) {
+    if(!(target instanceof Element)||host.contains(target))return false;
+    if(target.closest('.tw2gui_window, #ui_workcontainer, #ui_menubar, #ui_bottombar, #ui_minimap, #ui_character_container'))return false;
+    if(target.closest('.job, #map'))return true;
+    for(let el=target,depth=0;el&&depth<12;el=el.parentElement,depth++){
+      if(el===document.body)break;
+      const r=el.getBoundingClientRect();
+      if(r.width>3000&&r.height>3000)return true;
+    }
+    return false;
   }
 
   function diagnostic() {
@@ -928,7 +1002,7 @@
       'Ajuste automático: ' + config.autoWindows + ' (máx. ' + config.autoMax + '%)',
       'Inventario vertical TEST: ' + config.inventoryPortrait,
       'Iconos trabajos mapa: ' + config.mapJobSize + '%' + ' / candidatos ' + document.querySelectorAll('.job > img.jobimg').length,
-      'Espaciado radial: +' + config.mapJobSpacing + ' px / iconos movidos ' + spacedMapJobs.size,
+      'Espaciado radial: +' + config.mapJobSpacing + ' px / iconos movidos ' + spacedMapJobs.size + ' / ' + radialLayoutStatus,
       'HUD personaje: ' + config.characterHudScale + '% / contenedor encontrado ' + !!document.querySelector('#ui_character_container'),
       'Trabajos tactiles: ' + config.jobTouchSize + '% / +/- identificados ' + workStepCount,
       'Mapa: si está solo, puede ampliarse por encima del límite general si entra en pantalla',
@@ -1426,6 +1500,21 @@
 
   // Vincular sobre el botón original. Interceptamos el gesto para no ejecutar la acción al vincular.
   document.addEventListener('pointerdown', (e) => {
+    if (hudCaptureMode && !host.contains(e.target)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const target=e.target instanceof Element ? e.target : e.target.parentElement;
+      if(!target)return;
+      const snapshot=inspectHUDPart(target,hudCaptureMode);
+      inspectedPointer={id:e.pointerId,target,until:Date.now()+1500};
+      const label=hudCaptureMode==='resources'?'Barra de recursos':'Botón de evento';
+      hudCaptureMode=null;
+      settingsOpen=true;
+      const area=$('.inspection');
+      area.value=snapshot;area.classList.remove('hidden');
+      apply();toast(label+' identificado: tocá «Copiar análisis».',5000);
+      return;
+    }
     if (circleInspectionStep > 0 && !host.contains(e.target)) {
       if (circleInspectionStep === 1) {
         // Primer toque NORMAL: permite que el juego seleccione el lugar.
@@ -1506,7 +1595,7 @@
       return apply();
     }
     if (action === 'pinrail') { config.railExpanded = !config.railExpanded; railManualOverride = null; save(); return apply(); }
-    if (action === 'settings') { settingsOpen = !settingsOpen; binding = null; return apply(); }
+    if (action === 'settings') { settingsOpen = !settingsOpen; binding = null; hudCaptureMode=null; return apply(); }
     if (action === 'close') { settingsOpen = false; binding = null; return apply(); }
     if (action === 'bind') {
       binding = key;
@@ -1519,6 +1608,7 @@
     if (action === 'cancelbind') {
       binding = null;
       circleInspectionStep = 0;
+      hudCaptureMode = null;
       settingsOpen = true;
       return apply();
     }
@@ -1556,7 +1646,10 @@
     if (action === 'map-job-spacing') {
       const choices = [0, 20, 30, 40, 55];
       config.mapJobSpacing = choices[(choices.indexOf(config.mapJobSpacing) + 1) % choices.length];
-      clearRadialSpacing(); save(); return apply();
+      if(config.mapJobSpacing===0){clearRadialSpacing();radialLayoutStatus='desactivado';}
+      else if(radialDirections.size){applyRadialDistance();radialLayoutStatus='reajustados '+spacedMapJobs.size+' iconos (+'+config.mapJobSpacing+' px)';}
+      else if(lastMapTouch)scheduleRadialSpread(lastMapTouch.x,lastMapTouch.y);
+      save(); return apply();
     }
     if (action === 'hud-scale') {
       const choices = [100, 120, 135, 150];
@@ -1574,6 +1667,15 @@
       area.value = inspectJobWindows();
       area.classList.remove('hidden');
       return toast('Ventanas de trabajo analizadas. Tocá «Copiar análisis».', 4500);
+    }
+    if (action === 'hud-capture-top' || action === 'hud-capture-event') {
+      binding=null;
+      circleInspectionStep=0;
+      hudCaptureMode=action==='hud-capture-top'?'resources':'event';
+      settingsOpen=false;
+      clearTimeout(noticeTimer);
+      toastEl.classList.add('hidden');
+      return apply();
     }
     if (action === 'capture-circle') {
       binding = null;
@@ -1602,7 +1704,7 @@
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.8',
+        version: '2.0.0-alpha.9',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1671,16 +1773,19 @@
   document.addEventListener('pointerup', scheduleQuestWindows, { passive: true });
   document.addEventListener('click', scheduleNativeWindows, { passive: true });
   document.addEventListener('click', scheduleWorkTouchTargets, { passive: true });
-  // El centro del grupo de trabajos es un elemento del mapa. Nunca
-  // reubicamos iconos por tocar el HUD ni por tocar una ventana.
-  document.addEventListener('click', e => {
-    if (!config.enabled || config.mapJobSpacing <= 0 || !(e.target instanceof Element)) return;
-    const el = e.target;
-    if (host.contains(el) || el.closest('.tw2gui_window, #ui_workcontainer, #ui_menubar, #ui_bottombar, #ui_character_container')) return;
-    if (!el.closest('#map')) return;
-    if (el.closest('.job')) { clearRadialSpacing(); ++radialGeneration; return; }
-    scheduleRadialSpread(e.clientX,e.clientY);
-  }, { passive: true });
+  // Usamos captura de pointer para no depender de un #map ni de clics
+  // que el juego puede detener. No se dispara al desplazar el mapa.
+  document.addEventListener('pointerdown', e => {
+    if(!config.enabled||!isWorldMapTouch(e.target))return;
+    mapPointerStart={id:e.pointerId,x:e.clientX,y:e.clientY};
+  },{capture:true,passive:true});
+  document.addEventListener('pointerup', e => {
+    if(!mapPointerStart||mapPointerStart.id!==e.pointerId)return;
+    const start=mapPointerStart;mapPointerStart=null;
+    if(Math.hypot(e.clientX-start.x,e.clientY-start.y)>18)return;
+    scheduleRadialSpread(start.x,start.y);
+  },{capture:true,passive:true});
+  document.addEventListener('pointercancel',()=>{mapPointerStart=null;},{capture:true,passive:true});
   document.addEventListener('click', scheduleQuestWindows, { passive: true });
   window.addEventListener('scroll', scheduleViewport, { passive: true });
   window.addEventListener('orientationchange', scheduleViewport, { passive: true });
@@ -1695,5 +1800,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.8: separacion radial, HUD y controles tactiles.', 3400);
+  toast('The West Mobile TEST v2 alpha.9: círculo corregido e inspector del HUD.', 3400);
 })();
