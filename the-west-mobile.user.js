@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile - Nox (experimental)
 // @namespace    https://the-west.net/
-// @version      1.2.0
-// @description  Ventanas adaptables, X grande, misiones, mapa ampliado y alternancia abrir/cerrar Mapa y Personaje.
+// @version      1.3.0
+// @description  Version estable 1.3: cinco accesos automaticos; conserva vinculaciones manuales y mejoras de ventanas de v1.2.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -31,6 +31,16 @@
     { key: 'personaje', label: 'Personaje', icon: '🤠' },
     { key: 'ciudad', label: 'Ciudad', icon: '🏘️' },
   ];
+  // v1.3: selectores de menú identificados en una sesión real del juego.
+  // La vinculación manual tiene siempre prioridad. Si cambia el DOM,
+  // no hacemos clic en controles ambiguos y permitimos vincular de nuevo.
+  const AUTO_SHORTCUTS = Object.freeze({
+    mapa: '#ui_minimap',
+    misiones: '#ui_menubar > div:nth-of-type(1) > div:nth-of-type(1)',
+    mochila: '#ui_bottombar > div > div:nth-of-type(1) > div:nth-of-type(2)',
+    personaje: '#ui_character_container > div:nth-of-type(8)',
+    ciudad: '#ui_bottombar > div > div:nth-of-type(2) > div:nth-of-type(2)',
+  });
   const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
@@ -87,6 +97,26 @@
   }
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(config)); } catch (_) { /* modo privado */ }
+  }
+  // No persistir los predeterminados en localStorage: de ese modo nunca
+  // reemplazamos los vínculos de quien ya instaló la versión anterior.
+  function resolveShortcut(key) {
+    const manual = config.shortcuts[key];
+    const automatic = AUTO_SHORTCUTS[key];
+    const candidates = [
+      ...(typeof manual === 'string' && manual ? [{ selector: manual, mode: 'manual' }] : []),
+      ...(automatic && automatic !== manual ? [{ selector: automatic, mode: 'auto' }] : []),
+    ];
+    for (const option of candidates) {
+      try {
+        const found = document.querySelectorAll(option.selector);
+        if (found.length !== 1) continue;
+        const element = found[0];
+        if (!element?.isConnected || host.contains(element)) continue;
+        return { element, selector: option.selector, mode: option.mode };
+      } catch (_) { /* selector anterior no válido */ }
+    }
+    return null;
   }
   function escapeCss(text) {
     return window.CSS && typeof CSS.escape === 'function'
@@ -315,8 +345,9 @@
 
     $('[data-action="blockfocus"]').textContent = config.blockMapAutoFocus ? 'Activado' : 'Desactivado';
     linksEl.innerHTML = ITEMS.map(i => {
-      const isLinked = !!config.shortcuts[i.key];
-      return `<div class="line"><span>${i.icon} ${i.label} <small class="muted">(${isLinked ? 'vinculado' : 'sin vincular'})</small></span>
+      const resolved = resolveShortcut(i.key);
+      const status = resolved ? (resolved.mode === 'manual' ? 'manual ✓' : 'automático ✓') : 'sin detectar';
+      return `<div class="line"><span>${i.icon} ${i.label} <small class="muted">(${status})</small></span>
         <button type="button" data-action="bind" data-key="${i.key}" class="${binding === i.key ? 'linking' : ''}">${binding === i.key ? 'Esperando…' : 'Vincular'}</button></div>`;
     }).join('');
     if (config.enabled && (config.compact || config.largePanels)) scheduleCompact();
@@ -520,21 +551,14 @@
   }
   function openShortcut(key) {
     const item = ITEMS.find(i => i.key === key);
-    const selector = config.shortcuts[key];
-    if (!selector) {
+    const resolved = resolveShortcut(key);
+    if (!resolved) {
       settingsOpen = true;
       apply();
-      toast(`Primero vinculá «${item.label}» con su botón original.`);
+      toast(`No encontré el botón original de «${item.label}». Vinculalo desde ⚙️.`);
       return;
     }
-    let source;
-    try { source = document.querySelector(selector); } catch (_) { /* selector obsoleto */ }
-    if (!source || host.contains(source)) {
-      settingsOpen = true;
-      apply();
-      toast(`El acceso «${item.label}» cambió. Volvé a vincularlo.`);
-      return;
-    }
+    const source = resolved.element;
     // Si la ventana sigue abierta, cerrar mediante su X original. No tocamos
     // la opción original de abrir ni otros diálogos que puedan estar activos.
     if (TOGGLE_SHORTCUTS.has(key)) {
@@ -560,7 +584,7 @@
   function diagnostic() {
     const bounds = (document.querySelector('.tw2gui_inner_window') || {}).getBoundingClientRect?.();
     const text = [
-      'The West Mobile v1.2 (sin información de cuenta)',
+      'The West Mobile v1.3 (sin información de cuenta)',
       'Host: ' + location.hostname,
       'Pantalla CSS: ' + innerWidth + 'x' + innerHeight,
       'VisualViewport: ' + (visualViewport ? [visualViewport.width, visualViewport.height, visualViewport.scale, visualViewport.offsetLeft, visualViewport.offsetTop].map(n => Number(n).toFixed(2)).join(' / ') : 'no disponible'),
