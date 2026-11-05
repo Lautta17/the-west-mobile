@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.6
-// @description  TEST v2 alpha.6: inspector de ventana de trabajos y del circulo de seleccion en el mapa.
+// @version      2.0.0-alpha.7
+// @description  TEST v2 alpha.7: tamaño ajustable de iconos de trabajos del mapa sin modificar la cola ni sus acciones.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -42,7 +42,7 @@
     personaje: '#ui_character_container > div:nth-of-type(8)',
     ciudad: '#ui_bottombar > div > div:nth-of-type(2) > div:nth-of-type(2)',
   });
-  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
+  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, mapJobSize: 100, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
   let circleInspectionStep = 0;
@@ -81,6 +81,7 @@
         nativeScale: [100, 115, 125, 135].includes(saved.nativeScale) ? saved.nativeScale : defaults.nativeScale,
         autoWindows: typeof saved.autoWindows === 'boolean' ? saved.autoWindows : defaults.autoWindows,
         inventoryPortrait: typeof saved.inventoryPortrait === 'boolean' ? saved.inventoryPortrait : defaults.inventoryPortrait,
+        mapJobSize: [100, 150, 180, 200].includes(saved.mapJobSize) ? saved.mapJobSize : defaults.mapJobSize,
         autoMax: [125, 145, 160, 180].includes(saved.autoMax) ? saved.autoMax : defaults.autoMax,
         nativeClose: typeof saved.nativeClose === 'boolean' ? saved.nativeClose : defaults.nativeClose,
         questScale: [100, 115, 125, 140].includes(saved.questScale) ? saved.questScale : defaults.questScale,
@@ -154,6 +155,18 @@
     html.twmm-large .tw2gui_inner_window.twmm-enlarge button,
     html.twmm-large .tw2gui_inner_window.twmm-enlarge [role="button"] { min-height: 34px; }
 
+    /* Ajuste del icono de trabajo del MAPA. El inspector confirmó
+       .job > img.jobimg en la capa de marcadores, fuera de .jobwindow.
+       Escalamos únicamente la imagen: no cambiamos el contenedor ni las
+       coordenadas del marcador, y no agregamos listeners ni clics.
+       El hit-test del elemento transformado aumenta con su imagen,
+       salvo que algún ancestro del juego recorte el área. */
+    html.twmm-on.twmm-mapjob-150 .job > img.jobimg { transform: scale(1.5) !important; }
+    html.twmm-on.twmm-mapjob-180 .job > img.jobimg { transform: scale(1.8) !important; }
+    html.twmm-on.twmm-mapjob-200 .job > img.jobimg { transform: scale(2) !important; }
+    html.twmm-on[class*="twmm-mapjob-"] .job > img.jobimg {
+      transform-origin: center center !important;
+    }
     /* Ajustes visuales al juego original. No se modifican clics ni drag & drop.
        La X agrandada se inserta sólo donde existe una X nativa reconocible. */
     .tw2gui_window.twmm-native-window { transform-origin: center center !important; }
@@ -307,6 +320,7 @@
       <div class="line"><span>X grande para cerrar ventanas del juego</span><button type="button" data-action="native-close"></button></div>
       <div class="line"><span>Tamaño del seguimiento de misiones y brújulas</span><button type="button" data-action="quest-scale"></button></div>
       <div class="line"><span>Evitar teclado automático del minimapa</span><button type="button" data-action="blockfocus"></button></div>
+      <div class="line"><span>🧪 Tamaño de los iconos de trabajos en el mapa (TEST)<small class="muted">Aumenta solo imágenes .jobimg; puede generar solapamientos cuando hay marcadores próximos. No afecta la ventana ni la cola de trabajos.</small></span><button type="button" data-action="map-job-size"></button></div>
       <div class="line"><span><b>🧪 v2.0 — Inspección de trabajos y mapa</b><small class="muted"> Abrí una ventana de trabajo y analizala, o activá la captura de dos toques para identificar el circulito que aparece al seleccionar un lugar.</small></span></div>
       <div class="actions">
         <button type="button" data-action="inspect-jobs">Analizar ventana de trabajos</button>
@@ -344,6 +358,10 @@
     document.documentElement.classList.toggle('twmm-on', config.enabled);
     document.documentElement.classList.toggle('twmm-compact', config.enabled && config.compact);
     document.documentElement.classList.toggle('twmm-large', config.enabled && config.largePanels);
+    for (const size of [150, 180, 200]) {
+      document.documentElement.classList.toggle('twmm-mapjob-' + size,
+        config.enabled && config.mapJobSize === size);
+    }
     const railOpen = railManualOverride === null ? config.railExpanded : railManualOverride;
     $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || (!railOpen && !settingsOpen));
     $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || settingsOpen || railOpen);
@@ -371,6 +389,7 @@
     $('[data-action="quest-scale"]').textContent = config.questScale + '%';
 
     $('[data-action="blockfocus"]').textContent = config.blockMapAutoFocus ? 'Activado' : 'Desactivado';
+    $('[data-action="map-job-size"]').textContent = config.mapJobSize === 100 ? 'Normal' : config.mapJobSize + '%';
     linksEl.innerHTML = ITEMS.map(i => {
       const selected = resolveShortcut(i.key);
       const status = selected ? (selected.mode === 'manual' ? 'manual ✓' : 'automático ✓') : 'sin detectar';
@@ -697,7 +716,7 @@
       .slice(0, 10);
     return JSON.stringify({
       kind: 'the-west-mobile-test-job-layout',
-      version: '2.0.0-alpha.6',
+      version: '2.0.0-alpha.7',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       windows: windows.map((win, index) => {
         const matches = [...win.querySelectorAll('*')]
@@ -741,7 +760,7 @@
     }
     return JSON.stringify({
       kind: 'the-west-mobile-test-map-circle',
-      version: '2.0.0-alpha.6',
+      version: '2.0.0-alpha.7',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       element: chain[0] || null,
       ancestorChain: chain,
@@ -767,6 +786,7 @@
       'Ventanas nativas detectadas: ' + nativeWindowState.size,
       'Ajuste automático: ' + config.autoWindows + ' (máx. ' + config.autoMax + '%)',
       'Inventario vertical TEST: ' + config.inventoryPortrait,
+      'Iconos trabajos mapa: ' + config.mapJobSize + '%' + ' / candidatos ' + document.querySelectorAll('.job > img.jobimg').length,
       'Mapa: si está solo, puede ampliarse por encima del límite general si entra en pantalla',
       'Escala manual nativa: ' + config.nativeScale + '%',
       'Distribución de ventanas: ' + nativeLayoutStatus,
@@ -1383,6 +1403,12 @@
     }
     if (action === 'compact') { config.compact = !config.compact; save(); return apply(); }
     if (action === 'blockfocus') { config.blockMapAutoFocus = !config.blockMapAutoFocus; save(); return apply(); }
+    if (action === 'map-job-size') {
+      const choices = [100, 150, 180, 200];
+      config.mapJobSize = choices[(choices.indexOf(config.mapJobSize) + 1) % choices.length];
+      save();
+      return apply();
+    }
     if (action === 'inspect-jobs') {
       const area = $('.inspection');
       area.value = inspectJobWindows();
@@ -1416,7 +1442,7 @@
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.6',
+        version: '2.0.0-alpha.7',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1497,5 +1523,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.6: inspector de trabajos y circulito en ⚙️.', 3400);
+  toast('The West Mobile TEST v2 alpha.7: tamaño de iconos de trabajos configurable en ⚙️.', 3400);
 })();
