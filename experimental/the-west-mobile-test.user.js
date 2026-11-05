@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.5
-// @description  TEST v2 alpha.5: accesos predeterminados con prioridad de vinculos manuales y respaldo seguro.
+// @version      2.0.0-alpha.6
+// @description  TEST v2 alpha.6: inspector de ventana de trabajos y del circulo de seleccion en el mapa.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -45,6 +45,8 @@
   const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
+  let circleInspectionStep = 0;
+  let inspectedPointer = null;
   let settingsOpen = false;
   let noticeTimer;
   let updateQueued = false;
@@ -305,7 +307,12 @@
       <div class="line"><span>X grande para cerrar ventanas del juego</span><button type="button" data-action="native-close"></button></div>
       <div class="line"><span>Tamaño del seguimiento de misiones y brújulas</span><button type="button" data-action="quest-scale"></button></div>
       <div class="line"><span>Evitar teclado automático del minimapa</span><button type="button" data-action="blockfocus"></button></div>
-      <div class="line"><span><b>🧪 v2.0 — Inventario y equipamiento</b><small class="muted"> Abrilos primero. El inspector registra medidas y estructura de ventanas (sin textos, nombres, ítems ni datos de sesión).</small></span></div>
+      <div class="line"><span><b>🧪 v2.0 — Inspección de trabajos y mapa</b><small class="muted"> Abrí una ventana de trabajo y analizala, o activá la captura de dos toques para identificar el circulito que aparece al seleccionar un lugar.</small></span></div>
+      <div class="actions">
+        <button type="button" data-action="inspect-jobs">Analizar ventana de trabajos</button>
+        <button type="button" data-action="capture-circle">Identificar circulito del mapa</button>
+      </div>
+      <div class="line"><span><b>Inspector de ventanas existente</b><small class="muted"> Solo se extraen clases genéricas, tamaños y estructura. Nunca textos, objetos, enlaces ni credenciales.</small></span></div>
       <div class="actions">
         <button type="button" data-action="inspect-v2">Analizar ventanas abiertas</button>
         <button type="button" data-action="export-shortcuts">Ver vínculos de botones</button>
@@ -338,11 +345,15 @@
     document.documentElement.classList.toggle('twmm-compact', config.enabled && config.compact);
     document.documentElement.classList.toggle('twmm-large', config.enabled && config.largePanels);
     const railOpen = railManualOverride === null ? config.railExpanded : railManualOverride;
-    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || (!railOpen && !settingsOpen));
-    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || settingsOpen || railOpen);
+    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || (!railOpen && !settingsOpen));
+    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || settingsOpen || railOpen);
     $('.bubble').classList.toggle('hidden', config.enabled);
-    bindHintEl.classList.toggle('hidden', !config.enabled || !binding);
-    if (binding) {
+    bindHintEl.classList.toggle('hidden', !config.enabled || (!binding && !circleInspectionStep));
+    if (circleInspectionStep) {
+      $('.bind-label').textContent = circleInspectionStep === 1
+        ? 'Inspector 1/2: tocá un lugar en el mapa'
+        : 'Inspector 2/2: tocá el circulito que apareció';
+    } else if (binding) {
       const item = ITEMS.find(i => i.key === binding);
       $('.bind-label').textContent = `Vincular ${item ? item.label : 'acceso'}: tocá el original`;
     }
@@ -650,6 +661,92 @@
         zoom: Math.round((vv?.scale || 1) * 100) / 100 },
       windowCount: dialogs.length, windows: dialogs,
       note: 'Sin texto del juego, personajes, nombre de cuenta, HTML completo, enlaces o credenciales.'
+    }, null, 2);
+  }
+
+  // Reportes limitados a estructura de interfaz. Jamás leemos texto,
+  // contenido HTML, IDs, valores de inputs, coordenadas del mapa o URLs.
+  function safeUiClasses(node) {
+    if (!(node instanceof Element)) return [];
+    return [...node.classList]
+      .filter(name => name.length <= 55 && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name) &&
+        !/[0-9]{3}/.test(name) &&
+        /(?:tw2gui|window|job|work|time|duration|reward|start|energy|skill|button|icon|menu|circle|radial|map|popup|layer|pointer|marker|selection|target|action|content|scroll|panel|frame|sprite|canvas|location|group|item|slot|header|footer|top|bottom)/i.test(name))
+      .slice(0, 8);
+  }
+  function interfaceShape(node) {
+    const r = node.getBoundingClientRect();
+    const css = getComputedStyle(node);
+    return {
+      tag: node.tagName.toLowerCase(), classes: safeUiClasses(node),
+      size: [Math.round(r.width), Math.round(r.height)],
+      nativeSize: [node.offsetWidth || 0, node.offsetHeight || 0],
+      children: node.children.length,
+      position: css.position,
+      display: css.display,
+      transform: css.transform === 'none' ? 'none' : 'present',
+      pointerEvents: css.pointerEvents,
+      overflow: css.overflow
+    };
+  }
+  function inspectJobWindows() {
+    const windows = [...document.querySelectorAll('.tw2gui_window')]
+      .filter(el => el.isConnected && el.getClientRects().length &&
+        getComputedStyle(el).display !== 'none' &&
+        el.getBoundingClientRect().width > 90)
+      .slice(0, 10);
+    return JSON.stringify({
+      kind: 'the-west-mobile-test-job-layout',
+      version: '2.0.0-alpha.6',
+      viewport: [Math.round(innerWidth), Math.round(innerHeight)],
+      windows: windows.map((win, index) => {
+        const matches = [...win.querySelectorAll('*')]
+          .filter(el => el.children.length <= 15 &&
+            safeUiClasses(el).some(name => /job|work|time|duration|reward|start|energy|skill|button|scroll|progress|motivat|risk|labor|point|icon/i.test(name)));
+        const unique = new Set();
+        const controls = matches.filter(el => {
+          const token = [el.tagName, ...safeUiClasses(el)].join('.');
+          if (unique.has(token)) return false;
+          unique.add(token);
+          return true;
+        }).slice(0, 60).map(interfaceShape);
+        return {
+          index: index + 1,
+          ...interfaceShape(win),
+          closeButtons: [...win.querySelectorAll(CLOSE_SELECTOR)]
+            .filter(el => el.closest('.tw2gui_window') === win).length,
+          buttonCount: win.querySelectorAll('button, [role="button"], .tw2gui_button').length,
+          possibleControlCount: matches.length,
+          controls
+        };
+      }),
+      // Algunos menús del mapa no usan .tw2gui_window. Registramos candidatos
+      // visibles grandes, excluyendo la cola de trabajos original.
+      otherPanels: [...document.querySelectorAll('[class*="job" i], [class*="work" i]')]
+        .filter(el => el.isConnected && !el.closest('.tw2gui_window') &&
+          !el.closest('#twmm-root') && !el.closest('#ui_workcontainer') &&
+          el.getClientRects().length &&
+          el.getBoundingClientRect().width >= 170 &&
+          el.getBoundingClientRect().height >= 90 &&
+          getComputedStyle(el).display !== 'none')
+        .slice(0, 12).map(interfaceShape),
+      note: 'Solo clases genericas, tamanos y estructura; sin textos ni contenido personal.'
+    }, null, 2);
+  }
+  function inspectMapCircleElement(target) {
+    const chain = [];
+    for (let node = target, level = 0; node instanceof Element &&
+      node !== document.body && level < 9; node = node.parentElement, level++) {
+      chain.push({ level, ...interfaceShape(node) });
+    }
+    return JSON.stringify({
+      kind: 'the-west-mobile-test-map-circle',
+      version: '2.0.0-alpha.6',
+      viewport: [Math.round(innerWidth), Math.round(innerHeight)],
+      element: chain[0] || null,
+      ancestorChain: chain,
+      canvasBacked: chain.some(entry => entry.tag === 'canvas'),
+      note: 'Captura estructural. No incluye coordenadas, HTML, texto, URLs, ID de usuario ni credenciales.'
     }, null, 2);
   }
 
@@ -1165,6 +1262,29 @@
 
   // Vincular sobre el botón original. Interceptamos el gesto para no ejecutar la acción al vincular.
   document.addEventListener('pointerdown', (e) => {
+    if (circleInspectionStep > 0 && !host.contains(e.target)) {
+      if (circleInspectionStep === 1) {
+        // Primer toque NORMAL: permite que el juego seleccione el lugar.
+        circleInspectionStep = 2;
+        setTimeout(apply, 0);
+        return;
+      }
+      // Segundo toque: obtenemos el elemento sin ejecutar su acción.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const target = e.target instanceof Element ? e.target : e.target.parentElement;
+      if (!target) return;
+      const snapshot = inspectMapCircleElement(target);
+      inspectedPointer = { id: e.pointerId, target, until: Date.now() + 1500 };
+      circleInspectionStep = 0;
+      settingsOpen = true;
+      const area = $('.inspection');
+      area.value = snapshot;
+      area.classList.remove('hidden');
+      apply();
+      toast('Circulito inspeccionado. Tocá «Copiar análisis» y compartí el resultado.', 6000);
+      return;
+    }
     if (!binding || host.contains(e.target)) return;
     const key = binding;
     e.preventDefault();
@@ -1189,7 +1309,20 @@
     const label = ITEMS.find(i => i.key === key).label;
     toast(`¡${label} configurado! Podés deshacerlo desde ⚙️.`);
   }, { capture: true, passive: false });
+  document.addEventListener('pointerup', e => {
+    if (inspectedPointer && inspectedPointer.id === e.pointerId && Date.now() < inspectedPointer.until) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, { capture: true, passive: false });
   document.addEventListener('click', (e) => {
+    if (inspectedPointer && Date.now() < inspectedPointer.until &&
+      (inspectedPointer.target === e.target || inspectedPointer.target.contains(e.target))) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      inspectedPointer = null;
+      return;
+    }
     if (lastTap && Date.now() < lastTap.until && lastTap.target.contains(e.target)) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -1221,6 +1354,7 @@
     }
     if (action === 'cancelbind') {
       binding = null;
+      circleInspectionStep = 0;
       settingsOpen = true;
       return apply();
     }
@@ -1249,6 +1383,20 @@
     }
     if (action === 'compact') { config.compact = !config.compact; save(); return apply(); }
     if (action === 'blockfocus') { config.blockMapAutoFocus = !config.blockMapAutoFocus; save(); return apply(); }
+    if (action === 'inspect-jobs') {
+      const area = $('.inspection');
+      area.value = inspectJobWindows();
+      area.classList.remove('hidden');
+      return toast('Ventanas de trabajo analizadas. Tocá «Copiar análisis».', 4500);
+    }
+    if (action === 'capture-circle') {
+      binding = null;
+      settingsOpen = false;
+      circleInspectionStep = 1;
+      clearTimeout(noticeTimer);
+      toastEl.classList.add('hidden');
+      return apply();
+    }
     if (action === 'inspect-v2') {
       const area = $('.inspection');
       area.value = inspectV2Windows();
@@ -1268,7 +1416,7 @@
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.5',
+        version: '2.0.0-alpha.6',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1349,5 +1497,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.5: accesos automáticos listos; vinculaciones manuales conservadas.', 3400);
+  toast('The West Mobile TEST v2 alpha.6: inspector de trabajos y circulito en ⚙️.', 3400);
 })();
