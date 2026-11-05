@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.2
-// @description  TEST v2 alpha.2: inventario y equipo en vertical (opcional) + inspector. No activar con Stable.
+// @version      2.0.0-alpha.3
+// @description  TEST v2 alpha.3: modo vertical refinado para inventario/equipo, margen superior y pausa tras arrastre manual.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -46,6 +46,8 @@
   let layoutQueued = false;
   let railManualOverride = null;
   let nativeQueued = false;
+  let nativeLayoutSuspendUntil = 0;
+  let nativeDragState = null;
   const nativeWindowState = new Map();
   let nativeLayoutStatus = 'ninguna';
   let questQueued = false;
@@ -723,9 +725,10 @@
     updateNativeCloseButtons();
     if (!config.enabled) { nativeLayoutStatus = 'desactivado'; return; }
     const vv = window.visualViewport;
-    const minX = (vv?.offsetLeft || 0) + 8, minY = (vv?.offsetTop || 0) + 8;
+    const safeLeft = 8, safeRight = 8, safeTop = 78, safeBottom = 10;
+    const minX = (vv?.offsetLeft || 0) + safeLeft, minY = (vv?.offsetTop || 0) + safeTop;
     const viewW = vv?.width || innerWidth, viewH = vv?.height || innerHeight;
-    const availableW = Math.max(0, viewW - 16), availableH = Math.max(0, viewH - 16);
+    const availableW = Math.max(0, viewW - safeLeft - safeRight), availableH = Math.max(0, viewH - safeTop - safeBottom);
     const gap = 10;
     let windows = [];
     document.querySelectorAll('.tw2gui_window').forEach(win => {
@@ -755,14 +758,49 @@
     }
     windows.sort((a,b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
     const n = windows.length;
-    // Las clases wear/inventory se confirmaron con el inspector real.
-    // Sólo aplica si son LAS DOS ventanas abiertas; conserva nodos y eventos.
+    // Las clases wear/inventory se confirmaron en el inspector real.
+    // Sólo se activa si son LAS DOS ventanas abiertas; se conservan nodos y eventos.
     const inventoryPair = config.inventoryPortrait && n === 2 &&
       windows.some(entry => entry.win.classList.contains('wear')) &&
       windows.some(entry => entry.win.classList.contains('inventory')) &&
       windows.every(entry => entry.win.classList.contains('wear') || entry.win.classList.contains('inventory'));
     if (inventoryPair) {
       windows.sort((a, b) => Number(b.win.classList.contains('wear')) - Number(a.win.classList.contains('wear')));
+      const wearEntry = windows.find(entry => entry.win.classList.contains('wear'));
+      const invEntry = windows.find(entry => entry.win.classList.contains('inventory'));
+      if (wearEntry && invEntry) {
+        const ratioWear = 0.88;
+        const ratioInv = 1.14;
+        const tWidth = Math.min(availableW / (wearEntry.width * ratioWear), availableW / (invEntry.width * ratioInv));
+        const tHeight = Math.max(0, (availableH - gap) / (wearEntry.height * ratioWear + invEntry.height * ratioInv));
+        const t = Math.min(Math.max(config.autoMax / 100, 2.15), tWidth, tHeight);
+        const wearScale = t * ratioWear;
+        const invScale = t * ratioInv;
+        if (wearScale >= 1 && invScale >= 1) {
+          const totalH = wearEntry.height * wearScale + invEntry.height * invScale + gap;
+          const wearW = wearEntry.width * wearScale;
+          const invW = invEntry.width * invScale;
+          const xWear = minX + (availableW - wearW) / 2;
+          const xInv = minX + (availableW - invW) / 2;
+          const yWear = minY;
+          const yInv = minY + wearEntry.height * wearScale + gap;
+          [
+            {entry: wearEntry, scale: wearScale, x: xWear, y: yWear},
+            {entry: invEntry, scale: invScale, x: xInv, y: yInv},
+          ].forEach(({entry, scale, x, y}) => {
+            const {win, rect, width, height} = entry;
+            const expandedLeft = rect.left - (scale - 1) * width / 2;
+            const expandedTop = rect.top - (scale - 1) * height / 2;
+            const dx = x - expandedLeft;
+            const dy = y - expandedTop;
+            win.style.transformOrigin = 'center center';
+            win.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+          });
+          nativeLayoutStatus = `automático (vertical: equipo ${Math.round(wearScale * 100)}%, inventario ${Math.round(invScale * 100)}%, margen superior seguro)`;
+          if (config.compact || config.largePanels) fitWindows();
+          return;
+        }
+      }
     }
     const layouts = [];
     const onlyMap = n === 1 && isMapDialog(windows[0].win);
@@ -810,7 +848,7 @@
     const groupH=rowHeights.reduce((a,b)=>a+b,0)+gap*(rowHeights.length-1);
     // Centrar el conjunto dentro de la superficie real disponible.
     const groupLeft=minX+(availableW-groupW)/2;
-    const groupTop=minY+(availableH-groupH)/2;
+    const groupTop=minY+Math.max(0, Math.min((availableH-groupH)*0.18, 36));
     let y=groupTop;
     choice.rows.forEach((row,rowIndex)=>{
       let x=groupLeft+(groupW-rowWidths[rowIndex])/2;
@@ -852,6 +890,11 @@
     nativeQueued = true;
     requestAnimationFrame(() => {
       nativeQueued = false;
+      if (performance.now() < nativeLayoutSuspendUntil) {
+        nativeLayoutStatus = 'pausado tras arrastre manual';
+        setTimeout(scheduleNativeWindows, Math.max(60, Math.ceil(nativeLayoutSuspendUntil - performance.now() + 30)));
+        return;
+      }
       updateNativeWindows();
     });
   }
@@ -868,12 +911,13 @@
     if (!config.enabled) return;
 
     const vv = window.visualViewport;
-    const minX = (vv?.offsetLeft || 0) + 8;
-    const minY = (vv?.offsetTop || 0) + 8;
+    const safeLeft = 8, safeRight = 8, safeTop = 78, safeBottom = 10;
+    const minX = (vv?.offsetLeft || 0) + safeLeft;
+    const minY = (vv?.offsetTop || 0) + safeTop;
     const viewWidth = vv?.width || innerWidth;
     const viewHeight = vv?.height || innerHeight;
-    const maxX = minX + viewWidth - 16;
-    const maxY = minY + viewHeight - 16;
+    const maxX = minX + viewWidth - safeLeft - safeRight;
+    const maxY = minY + viewHeight - safeTop - safeBottom;
     const windows = [];
 
     document.querySelectorAll('.tw2gui_window').forEach(win => {
@@ -955,8 +999,7 @@
         } else {
           nativeLayoutStatus = 'sin ampliar (pantalla reducida)';
         }
-      }
-      // El par ya fue procesado. Ninguna otra regla puede desplazarlo por separado.
+      }      // El par ya fue procesado. Ninguna otra regla puede desplazarlo por separado.
     } else {
       // Si se abrió una sola ventana, conservamos el comportamiento de la v0.7.
       for (const entry of windows) {
@@ -1079,7 +1122,8 @@
       if (factor <= 1.005) { questLayoutStatus = 'sin espacio para ampliar'; return; }
       const scaledW = width * factor;
       const scaledH = height * factor;
-      // Prioridad: conservar la esquina superior derecha en el área visible.      // La lista crece hacia la izquierda, evitando desbordarse a la derecha.
+      // Prioridad: conservar la esquina superior derecha en el área visible.
+      // La lista crece hacia la izquierda, evitando desbordarse a la derecha.
       const intendedLeft = rect.right - scaledW;
       const targetLeft = Math.min(Math.max(intendedLeft, minX), maxX - scaledW);
       const targetTop = Math.min(Math.max(rect.top, minY), maxY - scaledH);
@@ -1204,6 +1248,28 @@
     if (action === 'enable') { config.enabled = true; save(); return apply(); }
   });
 
+  // Si el jugador arrastra una ventana nativa, pausamos temporalmente el auto-layout.
+  // Así puede inspeccionarla o recolocarla sin que vuelva instantáneamente al lugar forzado.
+  document.addEventListener('pointerdown', (e) => {
+    if (!config.enabled) return;
+    const win = e.target instanceof Element ? e.target.closest('.tw2gui_window') : null;
+    if (!win || !config.autoWindows || !isAdaptiveDialog(win)) return;
+    nativeDragState = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  }, { capture: true, passive: true });
+  document.addEventListener('pointermove', (e) => {
+    if (!nativeDragState || nativeDragState.id !== e.pointerId) return;
+    const dx = e.clientX - nativeDragState.x;
+    const dy = e.clientY - nativeDragState.y;
+    if ((dx * dx + dy * dy) >= 100) {
+      nativeLayoutSuspendUntil = performance.now() + 6000;
+      nativeDragState = null;
+      nativeLayoutStatus = 'pausado tras arrastre manual';
+    }
+  }, { capture: true, passive: true });
+  document.addEventListener('pointerup', (e) => {
+    if (nativeDragState && nativeDragState.id === e.pointerId) nativeDragState = null;
+  }, { capture: true, passive: true });
+
   const observer = new MutationObserver(mutations => {
     if (!config.enabled) return;
     for (const change of mutations) {
@@ -1237,5 +1303,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.2: inventario vertical disponible en ⚙️.', 3400);
+  toast('The West Mobile TEST v2 alpha.3: inventario vertical refinado y pausa tras arrastre manual.', 3400);
 })();
