@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.3
-// @description  TEST v2 alpha.3: modo vertical refinado para inventario/equipo, margen superior y pausa tras arrastre manual.
+// @version      2.0.0-alpha.4
+// @description  TEST v2 alpha.4: exportar vinculaciones CSS para preparar instalacion con botones preconfigurados.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -276,6 +276,7 @@
       <div class="line"><span><b>🧪 v2.0 — Inventario y equipamiento</b><small class="muted"> Abrilos primero. El inspector registra medidas y estructura de ventanas (sin textos, nombres, ítems ni datos de sesión).</small></span></div>
       <div class="actions">
         <button type="button" data-action="inspect-v2">Analizar ventanas abiertas</button>
+        <button type="button" data-action="export-shortcuts">Ver vínculos de botones</button>
         <button type="button" data-action="copy-inspection">Copiar análisis</button>
       </div>
       <textarea class="inspection hidden" readonly aria-label="Análisis técnico sin datos de cuenta"></textarea>
@@ -1228,6 +1229,25 @@
       area.classList.remove('hidden');
       return toast('Análisis de estructura listo. Podés copiarlo para revisarlo.', 4500);
     }
+    if (action === 'export-shortcuts') {
+      // Solo exportamos selectores CSS, sin HTML ni datos de sesión.
+      const entries = Object.fromEntries(ITEMS.map(item => {
+        const selector = config.shortcuts[item.key] || null;
+        let resolves = false;
+        if (selector) {
+          try { resolves = !!document.querySelector(selector); } catch (_) { /* selector desactualizado */ }
+        }
+        return [item.key, { selector, found: resolves }];
+      }));
+      const area = $('.inspection');
+      area.value = JSON.stringify({
+        kind: 'the-west-mobile-test-button-selectors',
+        version: '2.0.0-alpha.4',
+        shortcuts: entries
+      }, null, 2);
+      area.classList.remove('hidden');
+      return toast('Vínculos listos. Revisalos y tocá «Copiar análisis» para compartirlos.', 5000);
+    }
     if (action === 'copy-inspection') {
       const area = $('.inspection');
       if (!area.value) return toast('Primero tocá «Analizar ventanas abiertas».');
@@ -1303,5 +1323,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.3: inventario vertical refinado y pausa tras arrastre manual.', 3400);
+  toast('The West Mobile TEST v2 alpha.4: ya podés exportar tus vínculos desde ⚙️.', 3400);
 })();
