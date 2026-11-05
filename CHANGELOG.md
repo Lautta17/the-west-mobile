@@ -4,8 +4,6 @@
 - Vinculación automática de los cinco accesos (Mapa, Misiones, Inventario, Personaje y Ciudad).
 - Las vinculaciones manuales previas tienen prioridad y se conservan.
 - Si un selector manual deja de funcionar, se intenta el predeterminado; si falta o es ambiguo, se ofrece volver a vincular.
-- Los ajustes existentes y la distribución visual de v1.2 permanecen sin cambios.
-- Las mejoras de inventario/equipamiento vertical y el resto de v2 siguen en TEST.
 
 ## 1.2.0 — Estable
 - Prioridad de escalado para ventana de mapa abierta sola.
