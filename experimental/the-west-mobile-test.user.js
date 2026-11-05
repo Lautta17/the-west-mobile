@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.1
-// @description  TEST v2 alpha: inspector seguro de ventanas para preparar interfaz tactil. No instalar junto a Produccion.
+// @version      2.0.0-alpha.2
+// @description  TEST v2 alpha.2: inventario y equipo en vertical (opcional) + inspector. No activar con Stable.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -31,7 +31,7 @@
     { key: 'personaje', label: 'Personaje', icon: '🤠' },
     { key: 'ciudad', label: 'Ciudad', icon: '🏘️' },
   ];
-  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
+  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
   let settingsOpen = false;
@@ -65,6 +65,7 @@
         largePanels: typeof saved.largePanels === 'boolean' ? saved.largePanels : defaults.largePanels,
         nativeScale: [100, 115, 125, 135].includes(saved.nativeScale) ? saved.nativeScale : defaults.nativeScale,
         autoWindows: typeof saved.autoWindows === 'boolean' ? saved.autoWindows : defaults.autoWindows,
+        inventoryPortrait: typeof saved.inventoryPortrait === 'boolean' ? saved.inventoryPortrait : defaults.inventoryPortrait,
         autoMax: [125, 145, 160, 180].includes(saved.autoMax) ? saved.autoMax : defaults.autoMax,
         nativeClose: typeof saved.nativeClose === 'boolean' ? saved.nativeClose : defaults.nativeClose,
         questScale: [100, 115, 125, 140].includes(saved.questScale) ? saved.questScale : defaults.questScale,
@@ -257,13 +258,14 @@
     </nav>
     <button type="button" class="bubble hidden" data-action="enable" aria-label="Activar barra móvil">🤠</button>
     <section class="settings hidden" aria-label="Ajustes de The West Mobile">
-      <h2>🤠 The West Mobile · v2.0 TEST TEST</h2>
+      <h2>🤠 The West Mobile · v2.0 TEST</h2>
       <p>Para crear un acceso, tocá «Vincular» y luego el botón <b>original</b> del juego correspondiente. Se guarda sólo el selector local, nunca datos de la cuenta.</p>
       <div class="links"></div>
       <div class="line"><span>Barra abierta al iniciar (siempre plegable con ❯)</span><button type="button" data-action="pinrail"></button></div>
       <div class="line"><span>Ventanas compactas (experimental)</span><button type="button" data-action="compact"></button></div>
       <div class="line"><span>Agrandar ventanas (experimental)</span><button type="button" data-action="large"></button></div>
       <div class="line"><span>Ajustar automáticamente las ventanas originales</span><button type="button" data-action="auto-windows"></button></div>
+      <div class="line"><span>🧪 Inventario + Equipo en vertical (TEST)</span><button type="button" data-action="inventory-portrait"></button></div>
       <div class="line"><span>Ampliación máxima automática</span><button type="button" data-action="auto-max"></button></div>
       <div class="line"><span>Escala manual equipo/inventario (con Auto desactivado)</span><button type="button" data-action="native-scale"></button></div>
       <div class="line"><span>X grande para cerrar ventanas del juego</span><button type="button" data-action="native-close"></button></div>
@@ -316,6 +318,8 @@
     $('[data-action="native-scale"]').textContent = config.autoWindows ? 'Automático activo' : config.nativeScale + '%';
     $('[data-action="native-scale"]').disabled = config.autoWindows;
     $('[data-action="auto-windows"]').textContent = config.autoWindows ? 'Activado' : 'Desactivado';
+    $('[data-action="inventory-portrait"]').textContent = !config.autoWindows ? 'Requiere Auto' : config.inventoryPortrait ? 'Activado' : 'Desactivado';
+    $('[data-action="inventory-portrait"]').disabled = !config.autoWindows;
     $('[data-action="auto-max"]').textContent = config.autoMax + '%';
     $('[data-action="native-close"]').textContent = config.nativeClose ? 'Activado' : 'Desactivado';
     $('[data-action="quest-scale"]').textContent = config.questScale + '%';
@@ -611,7 +615,7 @@
       });
     const vv = window.visualViewport;
     return JSON.stringify({
-      kind: 'the-west-mobile-test-layout-only', version: '2.0.0-alpha.1',
+      kind: 'the-west-mobile-test-layout-only', version: '2.0.0-alpha.2',
       device: {viewportCSS: [Math.round(innerWidth), Math.round(innerHeight)],
         visibleCSS: [Math.round(vv?.width || innerWidth), Math.round(vv?.height || innerHeight)],
         zoom: Math.round((vv?.scale || 1) * 100) / 100 },
@@ -636,6 +640,7 @@
       '.tw2gui_inner_window: ' + document.querySelectorAll('.tw2gui_inner_window').length,
       'Ventanas nativas detectadas: ' + nativeWindowState.size,
       'Ajuste automático: ' + config.autoWindows + ' (máx. ' + config.autoMax + '%)',
+      'Inventario vertical TEST: ' + config.inventoryPortrait,
       'Mapa: si está solo, puede ampliarse por encima del límite general si entra en pantalla',
       'Escala manual nativa: ' + config.nativeScale + '%',
       'Distribución de ventanas: ' + nativeLayoutStatus,
@@ -750,9 +755,19 @@
     }
     windows.sort((a,b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
     const n = windows.length;
+    // Las clases wear/inventory se confirmaron con el inspector real.
+    // Sólo aplica si son LAS DOS ventanas abiertas; conserva nodos y eventos.
+    const inventoryPair = config.inventoryPortrait && n === 2 &&
+      windows.some(entry => entry.win.classList.contains('wear')) &&
+      windows.some(entry => entry.win.classList.contains('inventory')) &&
+      windows.every(entry => entry.win.classList.contains('wear') || entry.win.classList.contains('inventory'));
+    if (inventoryPair) {
+      windows.sort((a, b) => Number(b.win.classList.contains('wear')) - Number(a.win.classList.contains('wear')));
+    }
     const layouts = [];
     const onlyMap = n === 1 && isMapDialog(windows[0].win);
-    const maximum = onlyMap ? Math.max(config.autoMax / 100, 2.15) : (config.autoMax / 100);
+    const maximum = (onlyMap || inventoryPair)
+      ? Math.max(config.autoMax / 100, 2.15) : (config.autoMax / 100);
     for (let cols=1; cols<=Math.min(n,3); cols++) {
       const rows=[];
       for (let i=0; i<n; i+=cols) rows.push(windows.slice(i,i+cols));
@@ -768,7 +783,7 @@
         (availableH-verticalGaps)/sumHeights);
       layouts.push({cols, rows, baseWidths, baseHeights, factor});
     }
-    let viable=layouts.filter(l=>l.factor>=1.0);
+    let viable=layouts.filter(l=>l.factor>=1.0 && (!inventoryPair || l.cols === 1));
     if (!viable.length) {
       // No reducimos arbitrariamente las ventanas cuando la pantalla es escasa.
       // Se conservan el tamaño y comportamiento originales del juego.
@@ -779,7 +794,7 @@
     viable.sort((a,b)=>b.factor-a.factor);
     let choice=viable[0];
     // Mantener inventario/equipamiento lado a lado tiene prioridad si caben.
-    if (n===2) {
+    if (n===2 && !inventoryPair) {
       const lateral=viable.find(l=>l.cols===2);
       if (lateral && lateral.factor>=1.005) choice=lateral;
     }
@@ -810,7 +825,7 @@
       });
       y+=rowHeights[rowIndex]+gap;
     });
-    nativeLayoutStatus=`automático (${Math.round(factor*100)}%, ${n} ventana${n!==1?'s':''}, ${choice.cols} columna${choice.cols!==1?'s':''}${onlyMap ? ', mapa priorizado' : ''})`;
+    nativeLayoutStatus=`automático (${Math.round(factor*100)}%, ${n} ventana${n!==1?'s':''}, ${choice.cols} columna${choice.cols!==1?'s':''}${onlyMap ? ', mapa priorizado' : ''}${inventoryPair ? ', inventario vertical TEST' : ''})`;
     if (config.compact || config.largePanels) fitWindows();
   }
 
@@ -1139,6 +1154,10 @@
       return apply();
     }
     if (action === 'auto-windows') { config.autoWindows = !config.autoWindows; save(); return apply(); }
+    if (action === 'inventory-portrait') {
+      if (!config.autoWindows) return;
+      config.inventoryPortrait = !config.inventoryPortrait; save(); return apply();
+    }
     if (action === 'auto-max') {
       const values = [125, 145, 160, 180];
       config.autoMax = values[(values.indexOf(config.autoMax) + 1) % values.length];
@@ -1188,7 +1207,11 @@
   const observer = new MutationObserver(mutations => {
     if (!config.enabled) return;
     for (const change of mutations) {
-      if (change.addedNodes.length > 0) { scheduleCompact(); scheduleNativeWindows(); scheduleQuestWindows(); break; }
+      const removedWindow = [...change.removedNodes].some(node =>
+        node.nodeType === 1 && (node.matches?.('.tw2gui_window') || node.querySelector?.('.tw2gui_window')));
+      if (change.addedNodes.length > 0 || removedWindow) {
+        scheduleCompact(); scheduleNativeWindows(); scheduleQuestWindows(); break;
+      }
     }
   });
   // No observamos atributos: de otro modo ajustar una ventana realimentaría el observador.
@@ -1214,5 +1237,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2.0: inspector de ventanas disponible en ⚙️.', 3400);
+  toast('The West Mobile TEST v2 alpha.2: inventario vertical disponible en ⚙️.', 3400);
 })();
