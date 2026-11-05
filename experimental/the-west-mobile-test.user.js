@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.7
-// @description  TEST v2 alpha.7: tamaño ajustable de iconos de trabajos del mapa sin modificar la cola ni sus acciones.
+// @version      2.0.0-alpha.8
+// @description  TEST v2 alpha.8: separacion radial, HUD del personaje y botones de trabajos tactiles (experimentales).
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -42,7 +42,7 @@
     personaje: '#ui_character_container > div:nth-of-type(8)',
     ciudad: '#ui_bottombar > div > div:nth-of-type(2) > div:nth-of-type(2)',
   });
-  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, mapJobSize: 100, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
+  const defaults = { enabled: true, compact: true, blockMapAutoFocus: true, largePanels: true, nativeScale: 125, autoWindows: true, autoMax: 160, inventoryPortrait: false, mapJobSize: 100, mapJobSpacing: 30, characterHudScale: 135, jobTouchSize: 140, nativeClose: true, questScale: 125, railExpanded: false, shortcuts: {} };
   let config = readSettings();
   let binding = null;
   let circleInspectionStep = 0;
@@ -61,6 +61,10 @@
   let nativeQueued = false;
   let nativeLayoutSuspendUntil = 0;
   let nativeDragState = null;
+  const spacedMapJobs = new Set();
+  let radialGeneration = 0;
+  let workTouchQueued = false;
+  let workStepCount = 0;
   const nativeWindowState = new Map();
   let nativeLayoutStatus = 'ninguna';
   let questQueued = false;
@@ -82,6 +86,9 @@
         autoWindows: typeof saved.autoWindows === 'boolean' ? saved.autoWindows : defaults.autoWindows,
         inventoryPortrait: typeof saved.inventoryPortrait === 'boolean' ? saved.inventoryPortrait : defaults.inventoryPortrait,
         mapJobSize: [100, 150, 180, 200].includes(saved.mapJobSize) ? saved.mapJobSize : defaults.mapJobSize,
+        mapJobSpacing: [0, 20, 30, 40, 55].includes(saved.mapJobSpacing) ? saved.mapJobSpacing : defaults.mapJobSpacing,
+        characterHudScale: [100, 120, 135, 150].includes(saved.characterHudScale) ? saved.characterHudScale : defaults.characterHudScale,
+        jobTouchSize: [100, 125, 140, 160].includes(saved.jobTouchSize) ? saved.jobTouchSize : defaults.jobTouchSize,
         autoMax: [125, 145, 160, 180].includes(saved.autoMax) ? saved.autoMax : defaults.autoMax,
         nativeClose: typeof saved.nativeClose === 'boolean' ? saved.nativeClose : defaults.nativeClose,
         questScale: [100, 115, 125, 140].includes(saved.questScale) ? saved.questScale : defaults.questScale,
@@ -166,6 +173,32 @@
     html.twmm-on.twmm-mapjob-200 .job > img.jobimg { transform: scale(2) !important; }
     html.twmm-on[class*="twmm-mapjob-"] .job > img.jobimg {
       transform-origin: center center !important;
+    }
+    /* Mapa: se separan exclusivamente los marcadores pertenecientes al
+       agrupamiento circular detectado después de un toque del jugador. La
+       propiedad translate no reemplaza transform ni el left/top del juego. */
+    html.twmm-on .job.twmm-radial-spread {
+      translate: var(--twmm-ring-x, 0px) var(--twmm-ring-y, 0px);
+    }
+    /* Escala el HUD del personaje sin alterar la barra de oro ni el mapa.
+       CSS scale es independiente del transform original. */
+    html.twmm-on.twmm-hud-120 #ui_character_container { scale: 1.2 !important; }
+    html.twmm-on.twmm-hud-135 #ui_character_container { scale: 1.35 !important; }
+    html.twmm-on.twmm-hud-150 #ui_character_container { scale: 1.5 !important; }
+    html.twmm-on[class*="twmm-hud-"] #ui_character_container { transform-origin: top left !important; }
+    /* Trabajo: SOLO +/- identificados inequívocamente dentro del diálogo,
+       y el botón original de iniciar. La cola del HUD queda fuera. */
+    html.twmm-on.twmm-work-touch .jobwindow .twmm-job-step-button {
+      scale: var(--twmm-job-step-scale, 1.4) !important;
+      transform-origin: center center !important;
+      touch-action: manipulation !important;
+      cursor: pointer !important;
+    }
+    html.twmm-on.twmm-work-touch .jobwindow .job_startbutton {
+      scale: var(--twmm-job-start-scale, 1.16) !important;
+      transform-origin: center center !important;
+      touch-action: manipulation !important;
+      cursor: pointer !important;
     }
     /* Ajustes visuales al juego original. No se modifican clics ni drag & drop.
        La X agrandada se inserta sólo donde existe una X nativa reconocible. */
@@ -320,7 +353,10 @@
       <div class="line"><span>X grande para cerrar ventanas del juego</span><button type="button" data-action="native-close"></button></div>
       <div class="line"><span>Tamaño del seguimiento de misiones y brújulas</span><button type="button" data-action="quest-scale"></button></div>
       <div class="line"><span>Evitar teclado automático del minimapa</span><button type="button" data-action="blockfocus"></button></div>
-      <div class="line"><span>🧪 Tamaño de los iconos de trabajos en el mapa (TEST)<small class="muted">Aumenta solo imágenes .jobimg; puede generar solapamientos cuando hay marcadores próximos. No afecta la ventana ni la cola de trabajos.</small></span><button type="button" data-action="map-job-size"></button></div>
+      <div class="line"><span>🧪 Tamaño de iconos de trabajos (TEST)<small class="muted">Agranda las imágenes del círculo sin cambiar su posición original.</small></span><button type="button" data-action="map-job-size"></button></div>
+      <div class="line"><span>🧪 Separación del círculo (TEST)<small class="muted">Separa 3 a 6 iconos alrededor del punto seleccionado, solo cuando identifica un grupo circular.</small></span><button type="button" data-action="map-job-spacing"></button></div>
+      <div class="line"><span>🧪 Vida y energía: tamaño del HUD (TEST)<small class="muted">Amplía el bloque del personaje. La reubicación de bonos queda pendiente de identificar sus elementos.</small></span><button type="button" data-action="hud-scale"></button></div>
+      <div class="line"><span>🧪 +/- e Iniciar trabajo (TEST)<small class="muted">Amplía el botón Iniciar y los controles +/- que puedan reconocerse por su texto, etiqueta o clase.</small></span><button type="button" data-action="job-touch"></button></div>
       <div class="line"><span><b>🧪 v2.0 — Inspección de trabajos y mapa</b><small class="muted"> Abrí una ventana de trabajo y analizala, o activá la captura de dos toques para identificar el circulito que aparece al seleccionar un lugar.</small></span></div>
       <div class="actions">
         <button type="button" data-action="inspect-jobs">Analizar ventana de trabajos</button>
@@ -362,6 +398,16 @@
       document.documentElement.classList.toggle('twmm-mapjob-' + size,
         config.enabled && config.mapJobSize === size);
     }
+    for (const size of [120, 135, 150]) {
+      document.documentElement.classList.toggle('twmm-hud-' + size,
+        config.enabled && config.characterHudScale === size);
+    }
+    document.documentElement.classList.toggle('twmm-work-touch',
+      config.enabled && config.jobTouchSize > 100);
+    document.documentElement.style.setProperty('--twmm-job-step-scale', String(config.jobTouchSize / 100));
+    document.documentElement.style.setProperty('--twmm-job-start-scale',
+      String(1 + (config.jobTouchSize - 100) * 0.004));
+    if (!config.enabled || config.mapJobSpacing === 0) clearRadialSpacing();
     const railOpen = railManualOverride === null ? config.railExpanded : railManualOverride;
     $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || (!railOpen && !settingsOpen));
     $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || settingsOpen || railOpen);
@@ -390,6 +436,9 @@
 
     $('[data-action="blockfocus"]').textContent = config.blockMapAutoFocus ? 'Activado' : 'Desactivado';
     $('[data-action="map-job-size"]').textContent = config.mapJobSize === 100 ? 'Normal' : config.mapJobSize + '%';
+    $('[data-action="map-job-spacing"]').textContent = config.mapJobSpacing ? '+' + config.mapJobSpacing + ' px' : 'Normal';
+    $('[data-action="hud-scale"]').textContent = config.characterHudScale + '%';
+    $('[data-action="job-touch"]').textContent = config.jobTouchSize === 100 ? 'Normal' : config.jobTouchSize + '%';
     linksEl.innerHTML = ITEMS.map(i => {
       const selected = resolveShortcut(i.key);
       const status = selected ? (selected.mode === 'manual' ? 'manual ✓' : 'automático ✓') : 'sin detectar';
@@ -400,6 +449,7 @@
     scheduleViewport();
     scheduleNativeWindows();
     scheduleQuestWindows();
+    scheduleWorkTouchTargets();
   }
 
   function toast(message, ms = 3100) {
@@ -716,7 +766,7 @@
       .slice(0, 10);
     return JSON.stringify({
       kind: 'the-west-mobile-test-job-layout',
-      version: '2.0.0-alpha.7',
+      version: '2.0.0-alpha.8',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       windows: windows.map((win, index) => {
         const matches = [...win.querySelectorAll('*')]
@@ -760,13 +810,104 @@
     }
     return JSON.stringify({
       kind: 'the-west-mobile-test-map-circle',
-      version: '2.0.0-alpha.7',
+      version: '2.0.0-alpha.8',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       element: chain[0] || null,
       ancestorChain: chain,
       canvasBacked: chain.some(entry => entry.tag === 'canvas'),
       note: 'Captura estructural. No incluye coordenadas, HTML, texto, URLs, ID de usuario ni credenciales.'
     }, null, 2);
+  }
+
+  // Los +/- pueden ser sprites del juego y no necesariamente botones HTML.
+  // Por seguridad se resaltan SOLO nodos diminutos reconocidos, sin reconstruir
+  // el panel ni generar clics de ningún tipo.
+  function isWorkStepControl(el) {
+    if (!(el instanceof Element) || el.closest('#ui_workcontainer')) return false;
+    if (!el.closest('.jobwindow') || el.closest('#twmm-root')) return false;
+    if (el.children.length > 1 || el.querySelector('.job_startbutton')) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 6 || rect.height < 6 || rect.width > 65 || rect.height > 65) return false;
+    const token = [...el.classList].join(' ').toLowerCase();
+    const metadata = [el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].join(' ').trim().toLowerCase();
+    const text = el.children.length === 0 ? (el.textContent || '').trim() : '';
+    const classMatch = /(?:^|[_\s-])(?:plus|minus|increment|decrement|increase|decrease|add|remove)(?:$|[_\s-])/.test(token);
+    const metaMatch = /^(?:\+|\-|−|mas|más|menos|plus|minus|add|remove|increase|decrease)$/.test(metadata);
+    const textMatch = el.children.length === 0 && /^(?:\+|\-|−|＋)$/.test(text);
+    return classMatch || metaMatch || textMatch;
+  }
+  function updateWorkTouchTargets() {
+    workStepCount = 0;
+    const candidates = document.querySelectorAll('.jobwindow .job_durationbar *, .jobwindow .job_duration_bars *, .jobwindow .job_jobtimes *');
+    for (const el of candidates) {
+      const eligible = config.enabled && config.jobTouchSize > 100 && isWorkStepControl(el);
+      el.classList.toggle('twmm-job-step-button', !!eligible);
+      if (eligible) workStepCount++;
+    }
+  }
+  function scheduleWorkTouchTargets() {
+    if (workTouchQueued) return;
+    workTouchQueued = true;
+    requestAnimationFrame(() => {
+      workTouchQueued = false;
+      updateWorkTouchTargets();
+    });
+  }
+  function clearRadialSpacing() {
+    for (const el of spacedMapJobs) {
+      if (!el.isConnected) continue;
+      el.classList.remove('twmm-radial-spread');
+      el.style.removeProperty('--twmm-ring-x');
+      el.style.removeProperty('--twmm-ring-y');
+    }
+    spacedMapJobs.clear();
+  }
+  // Detectamos solamente un anillo de 3-6 marcadores próximo al punto tocado.
+  // El juego conserva sus nodos y left/top; desplazamos su dibujo/hitbox local.
+  function spreadRadialNear(x, y, generation) {
+    if (generation !== radialGeneration || !config.enabled || config.mapJobSpacing <= 0) return;
+    const viewport = window.visualViewport;
+    const minX = viewport?.offsetLeft || 0, minY = viewport?.offsetTop || 0;
+    const maxX = minX + (viewport?.width || innerWidth);
+    const maxY = minY + (viewport?.height || innerHeight);
+    const nearby = [];
+    for (const img of document.querySelectorAll('.job > img.jobimg')) {
+      const node = img.parentElement;
+      if (!node || !node.isConnected || node.closest('.jobwindow') || node.closest('#ui_workcontainer')) continue;
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const r = node.getBoundingClientRect();
+      if (r.width < 24 || r.width > 90 || r.height < 24 || r.height > 90) continue;
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cx < minX - 20 || cx > maxX + 20 || cy < minY - 20 || cy > maxY + 20) continue;
+      if (Math.hypot(cx - x, cy - y) <= 160) nearby.push({node, cx, cy});
+      if (nearby.length > 6) return; // Si hay demasiados, no movemos nada.
+    }
+    if (nearby.length < 3 || nearby.length > 6) return;
+    const centerX = nearby.reduce((n,p)=>n+p.cx,0)/nearby.length;
+    const centerY = nearby.reduce((n,p)=>n+p.cy,0)/nearby.length;
+    const radii = nearby.map(p=>Math.hypot(p.cx-centerX, p.cy-centerY));
+    const minR = Math.min(...radii), maxR = Math.max(...radii);
+    if (minR < 18 || maxR > 135 || maxR - minR > 95) return;
+    // Exigir que el toque haya sido aproximadamente el centro del grupo.
+    if (Math.hypot(x - centerX,y - centerY) > 90) return;
+    clearRadialSpacing();
+    for (let i=0; i<nearby.length; i++) {
+      const p=nearby[i], d=radii[i];
+      const deltaX=(p.cx-centerX)/d*config.mapJobSpacing;
+      const deltaY=(p.cy-centerY)/d*config.mapJobSpacing;
+      p.node.style.setProperty('--twmm-ring-x',deltaX.toFixed(1)+'px');
+      p.node.style.setProperty('--twmm-ring-y',deltaY.toFixed(1)+'px');
+      p.node.classList.add('twmm-radial-spread');
+      spacedMapJobs.add(p.node);
+    }
+  }
+  function scheduleRadialSpread(x, y) {
+    clearRadialSpacing();
+    if (!config.enabled || config.mapJobSpacing <= 0) return;
+    const generation=++radialGeneration;
+    setTimeout(()=>spreadRadialNear(x,y,generation),140);
+    setTimeout(()=>spreadRadialNear(x,y,generation),380);
   }
 
   function diagnostic() {
@@ -787,6 +928,9 @@
       'Ajuste automático: ' + config.autoWindows + ' (máx. ' + config.autoMax + '%)',
       'Inventario vertical TEST: ' + config.inventoryPortrait,
       'Iconos trabajos mapa: ' + config.mapJobSize + '%' + ' / candidatos ' + document.querySelectorAll('.job > img.jobimg').length,
+      'Espaciado radial: +' + config.mapJobSpacing + ' px / iconos movidos ' + spacedMapJobs.size,
+      'HUD personaje: ' + config.characterHudScale + '% / contenedor encontrado ' + !!document.querySelector('#ui_character_container'),
+      'Trabajos tactiles: ' + config.jobTouchSize + '% / +/- identificados ' + workStepCount,
       'Mapa: si está solo, puede ampliarse por encima del límite general si entra en pantalla',
       'Escala manual nativa: ' + config.nativeScale + '%',
       'Distribución de ventanas: ' + nativeLayoutStatus,
@@ -1409,7 +1553,23 @@
       save();
       return apply();
     }
+    if (action === 'map-job-spacing') {
+      const choices = [0, 20, 30, 40, 55];
+      config.mapJobSpacing = choices[(choices.indexOf(config.mapJobSpacing) + 1) % choices.length];
+      clearRadialSpacing(); save(); return apply();
+    }
+    if (action === 'hud-scale') {
+      const choices = [100, 120, 135, 150];
+      config.characterHudScale = choices[(choices.indexOf(config.characterHudScale) + 1) % choices.length];
+      save(); return apply();
+    }
+    if (action === 'job-touch') {
+      const choices = [100, 125, 140, 160];
+      config.jobTouchSize = choices[(choices.indexOf(config.jobTouchSize) + 1) % choices.length];
+      save(); return apply();
+    }
     if (action === 'inspect-jobs') {
+      scheduleWorkTouchTargets();
       const area = $('.inspection');
       area.value = inspectJobWindows();
       area.classList.remove('hidden');
@@ -1442,7 +1602,7 @@
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.7',
+        version: '2.0.0-alpha.8',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1459,7 +1619,7 @@
       } else { area.focus(); area.select(); toast('Seleccionado: copiá manualmente.'); }
       return;
     }
-    if (action === 'diagnostic') { diagnostic(); return; }
+    if (action === 'diagnostic') { scheduleWorkTouchTargets(); diagnostic(); return; }
     if (action === 'clear') { config.shortcuts = {}; save(); apply(); return toast('Accesos borrados.'); }
     if (action === 'disable') {
       config.enabled = false; settingsOpen = false; binding = null;
@@ -1493,6 +1653,7 @@
   const observer = new MutationObserver(mutations => {
     if (!config.enabled) return;
     for (const change of mutations) {
+      if (change.addedNodes.length > 0) scheduleWorkTouchTargets();
       const removedWindow = [...change.removedNodes].some(node =>
         node.nodeType === 1 && (node.matches?.('.tw2gui_window') || node.querySelector?.('.tw2gui_window')));
       if (change.addedNodes.length > 0 || removedWindow) {
@@ -1509,6 +1670,17 @@
   document.addEventListener('pointerup', scheduleNativeWindows, { passive: true });
   document.addEventListener('pointerup', scheduleQuestWindows, { passive: true });
   document.addEventListener('click', scheduleNativeWindows, { passive: true });
+  document.addEventListener('click', scheduleWorkTouchTargets, { passive: true });
+  // El centro del grupo de trabajos es un elemento del mapa. Nunca
+  // reubicamos iconos por tocar el HUD ni por tocar una ventana.
+  document.addEventListener('click', e => {
+    if (!config.enabled || config.mapJobSpacing <= 0 || !(e.target instanceof Element)) return;
+    const el = e.target;
+    if (host.contains(el) || el.closest('.tw2gui_window, #ui_workcontainer, #ui_menubar, #ui_bottombar, #ui_character_container')) return;
+    if (!el.closest('#map')) return;
+    if (el.closest('.job')) { clearRadialSpacing(); ++radialGeneration; return; }
+    scheduleRadialSpread(e.clientX,e.clientY);
+  }, { passive: true });
   document.addEventListener('click', scheduleQuestWindows, { passive: true });
   window.addEventListener('scroll', scheduleViewport, { passive: true });
   window.addEventListener('orientationchange', scheduleViewport, { passive: true });
@@ -1523,5 +1695,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.7: tamaño de iconos de trabajos configurable en ⚙️.', 3400);
+  toast('The West Mobile TEST v2 alpha.8: separacion radial, HUD y controles tactiles.', 3400);
 })();
