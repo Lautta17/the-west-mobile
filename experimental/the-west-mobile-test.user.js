@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         The West Mobile TEST - Nox
 // @namespace    https://the-west.net/the-west-mobile-test
-// @version      2.0.0-alpha.9
-// @description  TEST v2 alpha.9: correccion del espaciado circular e inspector de HUD y eventos.
+// @version      2.0.0-alpha.10
+// @description  TEST v2 alpha.10: inspector de indicadores de mision sobre iconos de trabajos del mapa.
 // @author       Nox + Lautta
 // @include      https://*.the-west.*/game.php*
 // @include      http://*.the-west.*/game.php*
@@ -46,6 +46,7 @@
   let config = readSettings();
   let binding = null;
   let circleInspectionStep = 0;
+  let questBadgeCapture = false;
   let hudCaptureMode = null;
   let inspectedPointer = null;
   let settingsOpen = false;
@@ -370,6 +371,7 @@
       <div class="actions">
         <button type="button" data-action="inspect-jobs">Analizar ventana de trabajos</button>
         <button type="button" data-action="capture-circle">Identificar circulito del mapa</button>
+        <button type="button" data-action="capture-job-badge">Identificar ! de misión en trabajo</button>
       </div>
       <div class="line"><span><b>Inspector de ventanas existente</b><small class="muted"> Solo se extraen clases genéricas, tamaños y estructura. Nunca textos, objetos, enlaces ni credenciales.</small></span></div>
       <div class="actions">
@@ -418,11 +420,13 @@
       String(1 + (config.jobTouchSize - 100) * 0.004));
     if (!config.enabled || config.mapJobSpacing === 0) clearRadialSpacing();
     const railOpen = railManualOverride === null ? config.railExpanded : railManualOverride;
-    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!hudCaptureMode || (!railOpen && !settingsOpen));
-    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!hudCaptureMode || settingsOpen || railOpen);
+    $('.dock').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!questBadgeCapture || !!hudCaptureMode || (!railOpen && !settingsOpen));
+    $('.rail-tab').classList.toggle('hidden', !config.enabled || !!binding || circleInspectionStep > 0 || !!questBadgeCapture || !!hudCaptureMode || settingsOpen || railOpen);
     $('.bubble').classList.toggle('hidden', config.enabled);
-    bindHintEl.classList.toggle('hidden', !config.enabled || (!binding && !circleInspectionStep && !hudCaptureMode));
-    if (hudCaptureMode) {
+    bindHintEl.classList.toggle('hidden', !config.enabled || (!binding && !circleInspectionStep && !hudCaptureMode && !questBadgeCapture));
+    if (questBadgeCapture) {
+      $('.bind-label').textContent = 'Inspector: tocá el trabajo que tenga el signo !';
+    } else if (hudCaptureMode) {
       $('.bind-label').textContent = hudCaptureMode === 'resources'
         ? 'Inspector: tocá la barra de recursos de arriba'
         : 'Inspector: tocá un botón de evento';
@@ -779,7 +783,7 @@
       .slice(0, 10);
     return JSON.stringify({
       kind: 'the-west-mobile-test-job-layout',
-      version: '2.0.0-alpha.9',
+      version: '2.0.0-alpha.10',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       windows: windows.map((win, index) => {
         const matches = [...win.querySelectorAll('*')]
@@ -847,6 +851,89 @@
     },null,2);
   }
 
+  // Inspector puntual: analiza solo la estructura del marcador de trabajo.
+  // Puede tocarse el icono completo: no exige acertarle al badge parcialmente
+  // oculto. No lee textos, nombres, src, HTML, IDs ni datos de la partida.
+  function inspectJobQuestBadge(job, target) {
+    const base = job.getBoundingClientRect();
+    const allowedClasses = el => [...el.classList].filter(name =>
+      /^[a-z][a-z0-9_-]{0,54}$/i.test(name) && !/[0-9]{3,}/.test(name)
+    ).slice(0, 10);
+    const numericRect = node => {
+      const r = node.getBoundingClientRect();
+      return [r.left-base.left, r.top-base.top, r.width, r.height]
+        .map(n => Math.round(n * 10) / 10);
+    };
+    const pseudoInfo = (node, kind) => {
+      const cs = getComputedStyle(node, kind);
+      if (!cs || cs.content === 'none' || cs.content === 'normal' ||
+          cs.content === '' || cs.display === 'none') return null;
+      // No copiamos css.content: podría contener texto.
+      return { present: true, position: cs.position, zIndex: cs.zIndex,
+        width: cs.width, height: cs.height, transform: cs.transform === 'none' ? 'none' : 'present' };
+    };
+    const summary = (node, depth, parentIndex) => {
+      const cs = getComputedStyle(node);
+      return { depth, parentIndex, tag: node.tagName.toLowerCase(),
+        classes: allowedClasses(node), rectFromJob: numericRect(node),
+        childCount: node.children.length,
+        style: { position: cs.position, zIndex: cs.zIndex,
+          display: cs.display, visibility: cs.visibility,
+          overflow: cs.overflow, opacity: cs.opacity,
+          transform: cs.transform === 'none' ? 'none' : 'present',
+          pointerEvents: cs.pointerEvents },
+        pseudoBefore: pseudoInfo(node, '::before'),
+        pseudoAfter: pseudoInfo(node, '::after') };
+    };
+    const tree = [];
+    const queue = [{ node: job, depth: 0, parentIndex: null }];
+    while (queue.length && tree.length < 60) {
+      const item = queue.shift();
+      const idx = tree.length;
+      tree.push(summary(item.node, item.depth, item.parentIndex));
+      if (item.depth < 5) {
+        for (const child of [...item.node.children].slice(0, 24))
+          queue.push({node: child, depth: item.depth + 1, parentIndex: idx});
+      }
+    }
+    // Si el ! es un elemento independiente y NO hijo del marcador,
+    // también inspeccionamos un máximo de 8 hermanos que lo solapen.
+    const overlays = job.parentElement ? [...job.parentElement.children]
+      .filter(el => el !== job && !el.classList.contains('job') && el.getClientRects().length)
+      .filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width < 140 && r.height < 140 &&
+          r.right >= base.left - 18 && r.left <= base.right + 18 &&
+          r.bottom >= base.top - 18 && r.top <= base.bottom + 18;
+      }).slice(0, 8).map(el => summary(el, 0, null)) : [];
+    return JSON.stringify({
+      kind: 'the-west-mobile-test-job-quest-indicator',
+      version: '2.0.0-alpha.10',
+      detectedJob: allowedClasses(job),
+      tappedInsideJob: job.contains(target),
+      markerOriginalSize: [job.offsetWidth, job.offsetHeight],
+      markerOnScreen: [Math.round(base.width), Math.round(base.height)],
+      markerNodes: tree, nearbyOverlays: overlays,
+      note: 'Solo estructura, clases genericas, CSS y posiciones relativas al marcador. Sin textos, imagenes, enlaces, IDs ni datos de cuenta.'
+    }, null, 2);
+  }
+  function jobNearPointer(target, x, y) {
+    const own = target?.closest?.('.job');
+    if (own && own.querySelector('img.jobimg')) return own;
+    let nearest = null, bestDistance = 80;
+    for (const image of document.querySelectorAll('.job > img.jobimg')) {
+      const node = image.parentElement;
+      if (!node?.isConnected || !node.getClientRects().length ||
+          node.closest('.jobwindow, #ui_workcontainer')) continue;
+      const r = node.getBoundingClientRect();
+      const dx = Math.max(r.left - x, 0, x - r.right);
+      const dy = Math.max(r.top - y, 0, y - r.bottom);
+      const distance = Math.hypot(dx, dy);
+      if (distance < bestDistance) {nearest = node; bestDistance = distance;}
+    }
+    return nearest;
+  }
+
   function inspectMapCircleElement(target) {
     const chain = [];
     for (let node = target, level = 0; node instanceof Element &&
@@ -855,7 +942,7 @@
     }
     return JSON.stringify({
       kind: 'the-west-mobile-test-map-circle',
-      version: '2.0.0-alpha.9',
+      version: '2.0.0-alpha.10',
       viewport: [Math.round(innerWidth), Math.round(innerHeight)],
       element: chain[0] || null,
       ancestorChain: chain,
@@ -1500,6 +1587,23 @@
 
   // Vincular sobre el botón original. Interceptamos el gesto para no ejecutar la acción al vincular.
   document.addEventListener('pointerdown', (e) => {
+    if (questBadgeCapture && !host.contains(e.target)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const target = e.target instanceof Element ? e.target : e.target.parentElement;
+      const job = jobNearPointer(target, e.clientX, e.clientY);
+      if (!job) {toast('No encontré un trabajo. Tocá el círculo que tenga el signo !.', 4000);return;}
+      const report = inspectJobQuestBadge(job, target);
+      inspectedPointer = {id: e.pointerId, target, until: Date.now() + 1500};
+      questBadgeCapture = false;
+      settingsOpen = true;
+      const area = $('.inspection');
+      area.value = report;
+      area.classList.remove('hidden');
+      apply();
+      toast('Indicador inspeccionado. Tocá «Copiar análisis».', 5000);
+      return;
+    }
     if (hudCaptureMode && !host.contains(e.target)) {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -1608,6 +1712,7 @@
     if (action === 'cancelbind') {
       binding = null;
       circleInspectionStep = 0;
+      questBadgeCapture = false;
       hudCaptureMode = null;
       settingsOpen = true;
       return apply();
@@ -1669,10 +1774,21 @@
       return toast('Ventanas de trabajo analizadas. Tocá «Copiar análisis».', 4500);
     }
     if (action === 'hud-capture-top' || action === 'hud-capture-event') {
+      questBadgeCapture=false;
       binding=null;
       circleInspectionStep=0;
       hudCaptureMode=action==='hud-capture-top'?'resources':'event';
       settingsOpen=false;
+      clearTimeout(noticeTimer);
+      toastEl.classList.add('hidden');
+      return apply();
+    }
+    if (action === 'capture-job-badge') {
+      binding = null;
+      hudCaptureMode = null;
+      circleInspectionStep = 0;
+      questBadgeCapture = true;
+      settingsOpen = false;
       clearTimeout(noticeTimer);
       toastEl.classList.add('hidden');
       return apply();
@@ -1704,7 +1820,7 @@
       const area = $('.inspection');
       area.value = JSON.stringify({
         kind: 'the-west-mobile-test-button-selectors',
-        version: '2.0.0-alpha.9',
+        version: '2.0.0-alpha.10',
         shortcuts: entries
       }, null, 2);
       area.classList.remove('hidden');
@@ -1800,5 +1916,5 @@
   // antes del primer frame, incluso en sitios con viewport inicialmente ancho.
   placeOverlay();
   apply();
-  toast('The West Mobile TEST v2 alpha.9: círculo corregido e inspector del HUD.', 3400);
+  toast('The West Mobile TEST v2 alpha.10: inspector del indicador ! disponible en ⚙️.', 3400);
 })();
